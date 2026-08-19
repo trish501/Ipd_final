@@ -1,0 +1,18 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.DS_Store
+
+# Generated pipeline output
+dataset/
+pipeline.log
+
+# Downloaded data (large files)
+data/csv/
+data/shapefiles/
+
+# Legacy paths
+data/output/
+data/input/
