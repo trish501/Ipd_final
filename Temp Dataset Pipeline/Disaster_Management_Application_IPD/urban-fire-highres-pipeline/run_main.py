@@ -1,5 +1,4 @@
 import builtins
-import sys
 import main
 
 # The inputs we want to provide to main.py interactive CLI:
@@ -12,7 +11,7 @@ import main
 # 7) Sentinel-2: '1'
 # 8) Start date: '01-08-2021'
 # 9) End date: '31-08-2021'
-# 10) Target images: '15'
+# 10) Target images: '1'
 
 inputs = [
     '1',            # VIIRS
@@ -24,7 +23,7 @@ inputs = [
     '1',            # Sentinel-2
     '01-08-2021',   # Start date
     '31-08-2021',   # End date
-    '15'            # Target images
+    '1'            # Target images
 ]
 
 input_idx = 0

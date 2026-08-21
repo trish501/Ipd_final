@@ -10,7 +10,8 @@ from src.filters import get_location
 from src.s2_preprocessing import S2Preprocessor
 from src.fire_features import FeatureGenerator
 from src.fire_detection import detect_fire_candidate, compute_candidate_bounding_box, FireCandidateConfig
-from src.fire_localization import localize_fire_candidates, LocalizationConfig, asdict
+from src.fire_localization import localize_fire_candidates, LocalizationConfig
+from dataclasses import asdict
 from src.yolo_ground_truth import process_yolo_export
 
 logger = logging.getLogger(__name__)

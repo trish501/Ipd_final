@@ -1,6 +1,4 @@
 import os
-import argparse
-import time
 from datetime import datetime
 from src.fire_data import load_events_from_csv
 from src.offline_urban_filter import init_offline_filter

@@ -59,7 +59,6 @@ def detect_fire_candidate(
 
     # 3. Use the exact logic, with clear intermediate variables
     ρ12 = features.b12
-    ρ11 = features.b11
     ρ4  = features.b04
 
     R12_11 = features.swir_ratio

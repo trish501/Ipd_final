@@ -6,7 +6,7 @@ import time
 import threading
 import json
 import pandas as pd
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 from src.fire_data import load_events_from_csv, get_firms_api_key
 from src.filters import get_bounding_box
@@ -15,7 +15,6 @@ from src.image_downloader import download_and_crop_image
 
 from src.offline_urban_filter import init_offline_filter, is_in_urban_area
 from src.cache import init_cache
-from src.spatial_grid import get_grid_cell
 
 logging.basicConfig(level=logging.INFO, format='%(message)s', filename='pipeline.log', filemode='w')
 logger = logging.getLogger(__name__)
@@ -27,10 +26,9 @@ import sys
 import threading
 import time
 from datetime import datetime
-from dateutil import parser as date_parser
 
 try:
-    from geopy.geocoders import Nominatim
+    pass
 except ImportError:
     pass
 

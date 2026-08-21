@@ -16,3 +16,21 @@ data/shapefiles/
 # Legacy paths
 data/output/
 data/input/
+
+# Model outputs & test caches
+YOLO_dataset/
+.pytest_cache/
+.vscode/
+.idea/
+*.log
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+env/
+Thumbs.db
+tmp/
+temp/
+scratch/
+*.tmp
+*.bak

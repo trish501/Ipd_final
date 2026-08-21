@@ -1,6 +1,5 @@
 import os
 import shutil
-import glob
 
 def safe_remove_file(filepath):
     if os.path.exists(filepath):

@@ -1,6 +1,6 @@
 import numpy as np
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from typing import List, Tuple
 from rasterio.warp import transform as rp_transform
 from src.fire_features import FireFeatures
