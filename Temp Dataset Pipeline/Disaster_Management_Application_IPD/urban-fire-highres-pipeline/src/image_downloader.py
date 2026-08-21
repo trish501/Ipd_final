@@ -1,25 +1,21 @@
 import os
 import logging
-import rasterio
-from rasterio.windows import from_bounds
-from rasterio.warp import transform
-from PIL import Image
+from PIL import Image, ImageDraw
 import numpy as np
 import json
 from datetime import datetime
-from src.filters import get_location
-
 import shutil
+
+from src.filters import get_location
+from src.s2_preprocessing import S2Preprocessor
+from src.fire_features import FeatureGenerator
+from src.fire_detection import detect_fire_candidate, compute_candidate_bounding_box, FireCandidateConfig
+from src.fire_localization import localize_fire_candidates, LocalizationConfig, asdict
+from src.yolo_ground_truth import process_yolo_export
 
 logger = logging.getLogger(__name__)
 
-
-
-def get_asset_href(item, asset_name):
-    """Returns signed href for an asset (assuming item is already signed by planetary_computer)."""
-    return item.assets[asset_name].href
-
-def write_image_metadata(txt_path, image_type, bands_text, band_order_list, item, event_meta, crs_val, res_val):
+def write_image_metadata(txt_path, image_type, bands_text, band_order_list, item, event_meta, crs_val, res_val, preprocessor_metadata):
     if not event_meta: event_meta = {}
     
     lat = event_meta.get('latitude')
@@ -29,7 +25,6 @@ def write_image_metadata(txt_path, image_type, bands_text, band_order_list, item
     if lat is not None and lon is not None:
         location_str = get_location(lat, lon)
     
-    # get_location returns "City, State, Country"
     parts = [p.strip() for p in location_str.split(",")]
     if len(parts) >= 3:
         city, state, country = parts[0], parts[1], parts[2]
@@ -42,7 +37,9 @@ def write_image_metadata(txt_path, image_type, bands_text, band_order_list, item
         f.write("-" * 50 + "\n\n")
         f.write(f"Image Type: {image_type}\n")
         f.write("Satellite: Sentinel-2\n")
-        f.write(f"Scene ID: {item.id}\n\n")
+        f.write(f"Scene ID: {item.id}\n")
+        f.write(f"Processing Level: {preprocessor_metadata.get('processing_level', 'Unknown')}\n")
+        f.write(f"Processing Baseline: {preprocessor_metadata.get('processing_baseline', 'Unknown')}\n\n")
         
         f.write("Bands:\n")
         for b in bands_text:
@@ -55,7 +52,6 @@ def write_image_metadata(txt_path, image_type, bands_text, band_order_list, item
         f.write(f"Acquisition Date: {sat_dt.strftime('%Y-%m-%d') if sat_dt else 'Not available'}\n")
         f.write(f"Acquisition Time: {sat_dt.strftime('%H:%M:%S') if sat_dt else 'Not available'}\n\n")
         
-        # Fire Event Dates explicitly populated from event_meta correctly
         f.write(f"Fire Acquisition Date: {event_meta.get('date', 'Not available')}\n")
         f.write(f"Fire Acquisition Time: {event_meta.get('time', 'Not available')}\n\n")
         
@@ -70,6 +66,7 @@ def write_image_metadata(txt_path, image_type, bands_text, band_order_list, item
         
         f.write(f"Coordinate Reference System: {crs_val}\n\n")
         f.write(f"Spatial Resolution: {res_val}\n\n")
+        f.write(f"Cloud/Cirrus Masked Percentage: {preprocessor_metadata.get('masked_pixel_percentage', 0.0):.2f}%\n\n")
         
         f.write("Source: NASA FIRMS\n")
         source = event_meta.get('source_file', '')
@@ -79,174 +76,225 @@ def write_image_metadata(txt_path, image_type, bands_text, band_order_list, item
             f.write("Fire Data Source: MODIS\n")
         else:
             f.write("Fire Data Source: Not available\n")
+            
+        candidate_bbox = event_meta.get('detected_fire_region_bbox')
+        if candidate_bbox and 'geographic' in candidate_bbox:
+            geo = candidate_bbox['geographic']
+            f.write("\nDetected Fire Region Bounding Box (Multispectral Anomaly):\n")
+            f.write(f"Min Lon: {geo['min_lon']}\n")
+            f.write(f"Max Lon: {geo['max_lon']}\n")
+            f.write(f"Min Lat: {geo['min_lat']}\n")
+            f.write(f"Max Lat: {geo['max_lat']}\n")
+            
         f.write("\n" + "-" * 50 + "\n")
+
+def scale_to_8bit(arr):
+    """
+    Scales physical surface reflectance (where 1.0 is max nominal reflection) to 0-255.
+    We cap at 1.0 (some fires go above 1.0 reflectance in SWIR, so they will saturate at 255).
+    """
+    scaled = arr * 255.0
+    return np.clip(scaled, 0, 255).astype(np.uint8)
 
 def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir: str, crop_km: float = 2.0, output_size: int = 1024, event_meta: dict = None):
     """
-    Downloads native Sentinel-2 bands, extracts them to a common 10m analysis grid, and generates RGB, SWIR composites.
+    Downloads native Sentinel-2 bands using S2Preprocessor, generates active-fire analysis, 
+    and outputs a false-color visualization.
     """
     os.makedirs(out_dir, exist_ok=True)
-    raw_dir = os.path.join(out_dir, "aligned_10m")
-    rgb_dir = os.path.join(out_dir, "rgb")
-    swir_dir = os.path.join(out_dir, "swir")
-    swir_nir_dir = os.path.join(out_dir, "swir_nir")
-    
-    for d in [raw_dir, rgb_dir, swir_dir, swir_nir_dir]:
-        os.makedirs(d, exist_ok=True)
+    vis_dir = os.path.join(out_dir, "visualization")
+    os.makedirs(vis_dir, exist_ok=True)
         
     try:
-        bands_to_fetch = ["B02", "B03", "B04", "B08", "B08a", "B11", "B12"]
-        band_data = {}
+        # 1. PREPROCESSING (Phase 1)
+        preprocessor = S2Preprocessor()
+        ms_data = preprocessor.process(item, lat, lon, crop_km)
         
-        # Download native bands
-        for band in bands_to_fetch:
-            # Planet Computer Sentinel-2 STAC uses B02, B03, B04, B08, B8A, B11, B12
-            # Notice the casing for B8A might be "B8A" or "B08a". PC uses "B08", "B8A".
-            asset_name = "B8A" if band == "B08a" else band
-            
-            href = get_asset_href(item, asset_name)
-            with rasterio.open(href) as src:
-                crs = src.crs
-                # Convert lat/lon to image CRS
-                xs, ys = transform('EPSG:4326', crs, [lon], [lat])
-                cx, cy = xs[0], ys[0]
-                
-                # Calculate bounds in meters
-                half_size = (crop_km * 1000) / 2.0
-                left, bottom, right, top = cx - half_size, cy - half_size, cx + half_size, cy + half_size
-                
-                # Establish 10m analysis grid exactly
-                target_size = int((crop_km * 1000) / 10.0)
-                
-                # Get the pixel window for these bounds
-                window = from_bounds(left, bottom, right, top, src.transform)
-                
-                # 10m bands get nearest (preserves raw reflectance), 20m bands get bilinear (interpolation)
-                resampling_method = rasterio.enums.Resampling.nearest if band in ["B02", "B03", "B04", "B08"] else rasterio.enums.Resampling.bilinear
-                
-                # Read the data within the window onto the 10m grid
-                arr = src.read(
-                    window=window, 
-                    out_shape=(1, target_size, target_size), 
-                    resampling=resampling_method,
-                    boundless=True,
-                    fill_value=0
-                )
-                band_data[band] = arr[0]
-                
-                # Create a new transform for the cropped output
-                new_transform = rasterio.transform.from_bounds(left, bottom, right, top, target_size, target_size)
-                
-                # Save 16-bit TIFF on common 10m grid
-                tiff_path = os.path.join(raw_dir, f"{band}.tif")
-                with rasterio.open(
-                    tiff_path,
-                    'w',
-                    driver='GTiff',
-                    height=target_size,
-                    width=target_size,
-                    count=1,
-                    dtype=band_data[band].dtype,
-                    crs=crs,
-                    transform=new_transform,
-                ) as dst:
-                    dst.write(band_data[band], 1)
-                
-        def scale_to_8bit(arr):
-            # Linearly scale 0-10000 to 0-255. No contrast enhancement.
-            scaled = (arr / 10000.0) * 255.0
-            return np.clip(scaled, 0, 255).astype(np.uint8)
-
-        # DATA-QUALITY VALIDITY GATE
-        b04_arr = band_data["B04"]
-        b04_size = b04_arr.shape[0]
-        total_pixels = b04_arr.size
-        valid_pixels = np.sum(b04_arr > 0)
-        valid_percentage = (valid_pixels / total_pixels) * 100.0
-        
-        center_y, center_x = b04_size // 2, b04_size // 2
-        center_valid = b04_arr[center_y, center_x] > 0
-        
-        window_size = 20
-        half_w = window_size // 2
-        local_window = b04_arr[
-            max(0, center_y - half_w) : min(b04_size, center_y + half_w), 
-            max(0, center_x - half_w) : min(b04_size, center_x + half_w)
-        ]
-        local_valid_percentage = (np.sum(local_window > 0) / local_window.size) * 100.0
-        
-        if not center_valid:
-            shutil.rmtree(out_dir, ignore_errors=True)
-            return {"error": "Event coordinate maps to invalid/NoData Sentinel-2 raster area."}
-            
-        if local_valid_percentage < 75.0:
-            shutil.rmtree(out_dir, ignore_errors=True)
-            return {"error": f"Insufficient valid imagery around event coordinate (local valid < 75%). Actual: {local_valid_percentage:.1f}%"}
-            
+        # 2. VALIDITY GATE
+        valid_percentage = (np.sum(ms_data.valid_mask) / ms_data.valid_mask.size) * 100.0
         if valid_percentage < 25.0:
             shutil.rmtree(out_dir, ignore_errors=True)
             return {"error": f"Crop contains insufficient valid imagery overall (< 25%). Actual: {valid_percentage:.1f}%"}
 
-        # Generate RGB Composite (B04, B03, B02)
-        rgb_arr = np.stack([band_data["B04"], band_data["B03"], band_data["B02"]], axis=-1)
-        rgb_8bit = scale_to_8bit(rgb_arr)
+        center_y, center_x = ms_data.valid_mask.shape[0] // 2, ms_data.valid_mask.shape[1] // 2
+        if not ms_data.valid_mask[center_y, center_x]:
+            shutil.rmtree(out_dir, ignore_errors=True)
+            return {"error": "Event coordinate maps to invalid/NoData Sentinel-2 raster area."}
+            
+        if ms_data.metadata['masked_pixel_percentage'] > 75.0:
+            shutil.rmtree(out_dir, ignore_errors=True)
+            return {"error": f"Crop is too cloudy to analyze. Cloud/cirrus masking: {ms_data.metadata['masked_pixel_percentage']:.1f}%"}
+
+        # 2. FEATURE GENERATION (Phase 2)
+        feature_generator = FeatureGenerator()
+        features = feature_generator.generate_features(ms_data)
         
-        rgb_img = Image.fromarray(rgb_8bit, 'RGB')
-        rgb_path = os.path.join(rgb_dir, "B4-B3-B2.jpg")
-        rgb_img.save(rgb_path, quality=90)
+        # 3. MULTISPECTRAL ACTIVE FIRE DETECTION
+        config = FireCandidateConfig(
+            swir2_abs_thresh=0.8,
+            swir_ratio_thresh=1.0,
+            swir_red_ratio_thresh=1.5,
+            b04_bright_reject_thresh=0.3,
+            retained_features=('b08', 'swir_red_diff', 'norm_swir_diff', 'red_swir_contrast', 'ndvi')
+        )
+        detection_result = detect_fire_candidate(features, config)
         
-        write_image_metadata(
-            txt_path=os.path.join(rgb_dir, "B4-B3-B2.txt"),
-            image_type="RGB",
-            bands_text=["B04 - Red", "B03 - Green", "B02 - Blue"],
-            band_order_list=["B04", "B03", "B02"],
-            item=item,
+        # 3.5 MULTISPECTRAL SPATIAL LOCALIZATION
+        loc_config = LocalizationConfig(
+            min_component_pixels=1,
+            min_component_area_m2=400.0,
+            min_auto_export_pixels=2,
+            min_auto_export_area_m2=800.0,
+            min_fill_ratio=0.05,
+            max_firms_viirs_distance_m=375.0,
+            max_firms_modis_distance_m=1000.0,
+            fallback_firms_distance_m=1000.0,
+            reject_invalid_edge_components=True,
+            morphology_enabled=False,
+            morphology_operation="none",
+            morphology_iterations=0
+        )
+        if event_meta is None:
+            event_meta = {}
+            
+        localization_result = localize_fire_candidates(detection_result, features, event_meta, loc_config)
+        
+        # Save diagnostics
+        diagnostics_dir = os.path.join(out_dir, "diagnostics")
+        os.makedirs(diagnostics_dir, exist_ok=True)
+        with open(os.path.join(diagnostics_dir, "phase3_fire_candidate_diagnostics.json"), "w") as f:
+            json.dump(detection_result.diagnostics, f, indent=4)
+            
+        loc_report = {
+            "event_id": event_meta.get("event_id", "unknown"),
+            "firms_source": event_meta.get("source", "unknown"),
+            "firms_coordinate_lon": event_meta.get("longitude"),
+            "firms_coordinate_lat": event_meta.get("latitude"),
+            "firms_projected_x_20m": event_meta.get("firms_x_20m"),
+            "firms_projected_y_20m": event_meta.get("firms_y_20m"),
+            "crop_size_rows": ms_data.b04.shape[0],
+            "crop_size_cols": ms_data.b04.shape[1],
+            "resolution_m": ms_data.transform.a,
+            "candidate_pixel_count": int(np.sum(detection_result.candidate_mask)),
+            "config": asdict(localization_result.config),
+            "components_found": len(localization_result.accepted_components) + len(localization_result.review_required_components) + len(localization_result.rejected_components),
+            "accepted_regions_count": len(localization_result.accepted_components),
+            "review_required_count": len(localization_result.review_required_components),
+            "rejected_regions_count": len(localization_result.rejected_components),
+            "accepted_region_ids": [c.component_id for c in localization_result.accepted_components],
+            "review_required_ids": [c.component_id for c in localization_result.review_required_components],
+            "rejected_region_ids": [c.component_id for c in localization_result.rejected_components],
+            "all_components": (
+                [asdict(c) for c in localization_result.accepted_components] + 
+                [asdict(c) for c in localization_result.review_required_components] + 
+                [asdict(c) for c in localization_result.rejected_components]
+            )
+        }
+        with open(os.path.join(diagnostics_dir, "phase4_localization_report.json"), "w") as f:
+            json.dump(loc_report, f, indent=4)
+            
+        # Create visual overlays natively
+        def save_mask_png(mask, name):
+            img = Image.fromarray((mask * 255).astype(np.uint8), 'L')
+            img.save(os.path.join(diagnostics_dir, name))
+            
+        save_mask_png(detection_result.candidate_mask, "phase4_candidate_mask.png")
+        save_mask_png(localization_result.cleaned_candidate_mask, "phase4_cleaned_mask.png")
+        
+        labeled_norm = (localization_result.labeled_components > 0)
+        save_mask_png(labeled_norm, "phase4_connected_components.png")
+        
+        # We can reconstruct accepted/rejected/review masks
+        acc_mask = np.zeros_like(detection_result.candidate_mask, dtype=bool)
+        rev_mask = np.zeros_like(detection_result.candidate_mask, dtype=bool)
+        rej_mask = np.zeros_like(detection_result.candidate_mask, dtype=bool)
+        
+        for comp in localization_result.accepted_components:
+            acc_mask = acc_mask | (localization_result.labeled_components == comp.component_id)
+        for comp in localization_result.review_required_components:
+            rev_mask = rev_mask | (localization_result.labeled_components == comp.component_id)
+        for comp in localization_result.rejected_components:
+            rej_mask = rej_mask | (localization_result.labeled_components == comp.component_id)
+            
+        save_mask_png(acc_mask, "phase4_accepted_regions.png")
+        save_mask_png(rev_mask, "phase4_review_required_regions.png")
+        save_mask_png(rej_mask, "phase4_rejected_regions.png")
+        
+        print("============================================================")
+        print(f"EVENT ID: {event_meta.get('event_id', 'unknown')}")
+        print(f"FIRMS Source: {event_meta.get('source', 'unknown')}")
+        print(f"FIRMS Point (Lon, Lat): {event_meta.get('longitude')}, {event_meta.get('latitude')}")
+        print(f"Projected 20m (x, y): {event_meta.get('firms_x_20m')}, {event_meta.get('firms_y_20m')}")
+        print(f"Crop Size: {ms_data.b04.shape[0]}x{ms_data.b04.shape[1]} at {ms_data.transform.a}m resolution")
+        print(f"Phase 3 Candidate Pixels: {np.sum(detection_result.candidate_mask)}")
+        print(f"Phase 4 Components Found: {len(localization_result.accepted_components) + len(localization_result.review_required_components) + len(localization_result.rejected_components)}")
+        print(f"  - Accepted for YOLO Export: {len(localization_result.accepted_components)}")
+        print(f"  - Review Required: {len(localization_result.review_required_components)}")
+        print(f"  - Rejected: {len(localization_result.rejected_components)}")
+        
+        all_comps = localization_result.accepted_components + localization_result.review_required_components + localization_result.rejected_components
+        print("Component Distances from FIRMS (m):")
+        for c in all_comps:
+            print(f"  - Comp {c.component_id}: {c.distance_to_firms_m:.1f}m")
+            
+        print("Rejection/Review Reasons Triggered:")
+        from collections import Counter
+        reasons_counter = Counter()
+        for comp in localization_result.rejected_components + localization_result.review_required_components:
+            for r in comp.decision_reasons:
+                reasons_counter[r] += 1
+        for reason, count in reasons_counter.items():
+            print(f"  - {reason}: {count}")
+        print("============================================================\n")
+        
+        fire_mask = localization_result.cleaned_candidate_mask
+        fire_candidate_bbox = compute_candidate_bounding_box(fire_mask, ms_data.transform)
+        
+        # 4. VISUALIZATION (False Color B12-B08-B04)
+        fc_arr = np.stack([ms_data.b12, ms_data.b08, ms_data.b04], axis=-1)
+        fc_img = Image.fromarray(scale_to_8bit(fc_arr), 'RGB')
+        
+        # --- PHASE 5: YOLO EXPORT ---
+        process_yolo_export(
+            localization_result=localization_result,
+            clean_fc_img=fc_img,
+            ms_data=ms_data,
             event_meta=event_meta,
-            crs_val=str(crs),
-            res_val="10m (Native)"
+            dataset_root="YOLO_dataset"
         )
         
-        # Generate SWIR Composite (B12, B11, B04)
-        swir_arr = np.stack([band_data["B12"], band_data["B11"], band_data["B04"]], axis=-1)
-        swir_img = Image.fromarray(scale_to_8bit(swir_arr), 'RGB')
-        swir_path = os.path.join(swir_dir, "B12-B11-B4.jpg")
-        swir_img.save(swir_path, quality=90)
+        if fire_candidate_bbox is None:
+            # We no longer delete the out_dir entirely so the user can inspect diagnostics
+            # shutil.rmtree(out_dir, ignore_errors=True)
+            return {"error": "No fire candidate detected after 20m multispectral analysis and spatial localization (rejected false positive)."}
+            
+        event_meta['detected_fire_region_bbox'] = fire_candidate_bbox
+
+        draw = ImageDraw.Draw(fc_img)
+        pix = fire_candidate_bbox['pixel']
+        draw.rectangle([pix['min_col'], pix['min_row'], pix['max_col'], pix['max_row']], outline="red", width=1)
+        
+        fc_path = os.path.join(vis_dir, "B12-B8-B4.jpg")
+        fc_img.save(fc_path, quality=90)
         
         write_image_metadata(
-            txt_path=os.path.join(swir_dir, "B12-B11-B4.txt"),
-            image_type="SWIR",
-            bands_text=["B12", "B11", "B04"],
-            band_order_list=["B12", "B11", "B04"],
+            txt_path=os.path.join(vis_dir, "B12-B8-B4.txt"),
+            image_type="False Color (SWIR2-NIR-Red)",
+            bands_text=["B12 - SWIR2", "B08 - NIR", "B04 - Red"],
+            band_order_list=["B12", "B08", "B04"],
             item=item,
             event_meta=event_meta,
-            crs_val=str(crs),
-            res_val="10m (20m Native represented on 10m analysis grid)"
-        )
-        
-        # Generate SWIR/NIR Composite (B12, B08a, B04)
-        swir_nir_arr = np.stack([band_data["B12"], band_data["B08a"], band_data["B04"]], axis=-1)
-        swir_nir_img = Image.fromarray(scale_to_8bit(swir_nir_arr), 'RGB')
-        swir_nir_path = os.path.join(swir_nir_dir, "B12-B8A-B4.jpg")
-        swir_nir_img.save(swir_nir_path, quality=90)
-        
-        write_image_metadata(
-            txt_path=os.path.join(swir_nir_dir, "B12-B8A-B4.txt"),
-            image_type="SWIR+NIR",
-            bands_text=["B12", "B08A", "B04"],
-            band_order_list=["B12", "B08A", "B04"],
-            item=item,
-            event_meta=event_meta,
-            crs_val=str(crs),
-            res_val="10m (20m Native represented on 10m analysis grid)"
+            crs_val=str(ms_data.crs),
+            res_val=f"{ms_data.resolution}m (Analysis Grid)",
+            preprocessor_metadata=ms_data.metadata
         )
         
         metadata = {
-            "analysis_grid_resolution": "10m",
-            "native_resolution": "10m (RGB, NIR), 20m (SWIR, Narrow NIR)",
-            "bands_available": ", ".join(bands_to_fetch),
-            "rgb_path": rgb_path,
-            "swir_path": swir_path,
-            "swir_nir_path": swir_nir_path,
+            "analysis_grid_resolution": f"{ms_data.resolution}m",
+            "native_resolution": "10m (Red, NIR), 20m (SWIR)",
+            "bands_available": ", ".join(ms_data.metadata["bands_loaded"]),
+            "false_color_path": fc_path,
+            "detected_fire_region_bounding_box": fire_candidate_bbox['geographic'],
             "generation_timestamp": datetime.utcnow().isoformat()
         }
         
@@ -256,7 +304,6 @@ def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir
         return metadata
             
     except Exception as e:
-        logger.error(f"Failed to download/crop image for {event_id}: {e}")
+        logger.error(f"Failed to process image for {event_id}: {e}")
         shutil.rmtree(out_dir, ignore_errors=True)
         return None
-

@@ -284,9 +284,26 @@ def update_state(state_dict, state_file, event_id, status):
     with csv_lock:
         state_dict[event_id] = status
         tmp_path = f"{state_file}.{os.getpid()}.{threading.get_ident()}.tmp"
-        with open(tmp_path, 'w') as f:
-            json.dump(state_dict, f)
-        os.replace(tmp_path, state_file)
+        try:
+            with open(tmp_path, 'w') as f:
+                json.dump(state_dict, f)
+            
+            max_retries = 20
+            for i in range(max_retries):
+                try:
+                    os.replace(tmp_path, state_file)
+                    break
+                except PermissionError as e:
+                    if i == max_retries - 1:
+                        logger.error(f"Failed to write state for {event_id} after {max_retries} retries: {e}")
+                        raise
+                    time.sleep(0.05)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
 
 def process_event(event, args, paths, schemas, tracker, state_dict, state_file, dashboard):
     if tracker.stop_requested:

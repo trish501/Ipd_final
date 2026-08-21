@@ -27,6 +27,10 @@ if __name__ == '__main__':
     print("Cleaning up downloaded satellite events...")
     events_dir = os.path.join(base_dir, "dataset", "unreviewed", "events")
     clear_directory(events_dir)
+    
+    print("Cleaning up YOLO dataset...")
+    yolo_dir = os.path.join(base_dir, "YOLO_dataset")
+    clear_directory(yolo_dir)
 
     print("==================================================")
     print("Dataset Pipeline Cleanup Complete!")
