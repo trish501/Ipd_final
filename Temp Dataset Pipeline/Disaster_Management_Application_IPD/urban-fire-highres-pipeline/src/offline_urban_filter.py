@@ -15,19 +15,42 @@ def init_offline_filter():
         return True
         
     shapefile_path = "data/shapefiles/ne_10m_urban_areas.shp"
-    if not os.path.exists(shapefile_path):
-        logger.error(f"Shapefile not found at {shapefile_path}. Did you download it?")
-        return False
+    required_files = [
+        "data/shapefiles/ne_10m_urban_areas.shp",
+        "data/shapefiles/ne_10m_urban_areas.shx",
+        "data/shapefiles/ne_10m_urban_areas.dbf",
+        "data/shapefiles/ne_10m_urban_areas.prj"
+    ]
+    for rf in required_files:
+        if not os.path.exists(rf):
+            logger.error(f"Shapefile companion missing: {rf}")
+            return False
         
     try:
         logger.info("Loading offline urban boundaries into memory...")
         _urban_gdf = gpd.read_file(shapefile_path)
+        if _urban_gdf is None or _urban_gdf.empty:
+            logger.error("Shapefile loaded but is empty or corrupted.")
+            _urban_gdf = None
+            return False
+            
+        if _urban_gdf.crs is None:
+            logger.error("Shapefile missing CRS.")
+            _urban_gdf = None
+            return False
+            
+        # Ensure it's in WGS84 since FIRMS provides lat/lon
+        if _urban_gdf.crs.to_string() != "EPSG:4326":
+            logger.info(f"Transforming shapefile CRS from {_urban_gdf.crs} to EPSG:4326")
+            _urban_gdf = _urban_gdf.to_crs("EPSG:4326")
+
         # Ensure it has a fast spatial index (sindex is built automatically on first query in geopandas)
         _urban_gdf.sindex
         logger.info(f"Successfully loaded {_urban_gdf.shape[0]} global urban polygons.")
         return True
     except Exception as e:
         logger.error(f"Failed to load urban shapefile: {e}")
+        _urban_gdf = None
         return False
 
 def is_in_urban_area(lat, lon):
@@ -37,10 +60,8 @@ def is_in_urban_area(lat, lon):
     """
     global _urban_gdf
     if _urban_gdf is None:
-        # If shapefile isn't loaded, default to True so we don't accidentally drop valid fires.
-        # It will just fall back to the slow WorldCover API check.
-        logger.warning("Offline filter not initialized, skipping fast filter.")
-        return True
+        logger.error("Offline filter not initialized, fail closed.")
+        return "URBAN_FILTER_VALIDATION_FAILED"
         
     # Create a shapely point (lon, lat)
     point = Point(lon, lat)

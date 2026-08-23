@@ -328,7 +328,13 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
     append_to_csv_sync(paths['events'], event_record, schemas['events'])
     
     # Offline Prefilter
-    if not is_in_urban_area(lat, lon):
+    urban_check = is_in_urban_area(lat, lon)
+    if urban_check == "URBAN_FILTER_VALIDATION_FAILED":
+        update_state(state_dict, state_file, event_id, "FAILED")
+        tracker.add_result("skipped_urban")
+        dashboard.update(process="Processing next event...")
+        return "URBAN_FILTER_VALIDATION_FAILED"
+    elif not urban_check:
         update_state(state_dict, state_file, event_id, "FAILED")
         tracker.add_result("skipped_urban")
         dashboard.update(process="Processing next event...")
