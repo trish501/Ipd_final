@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+outputs/
+output/
+data/outputs/
+cache/
+*.log
+.DS_Store
+
+# Caching and outputs
+cache/
+outputs/
+__pycache__/
+*.tmp
+*.lock
