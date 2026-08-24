@@ -1,6 +1,6 @@
 import os
 import json
-from typing import List, Optional
+from typing import List
 from datetime import datetime, timezone
 
 from src.models.input import InputEvent
@@ -8,8 +8,7 @@ from src.models.aoi import AOI
 from src.models.output import BuildingInfo, ImageryResult
 from src.models.enums import PipelineState, VisualStatus
 from src.utils.logger import logger
-from shapely.geometry import mapping, box
-import geopandas as gpd
+from shapely.geometry import mapping
 import rasterio
 
 class EventExporter:
@@ -40,8 +39,8 @@ class EventExporter:
         report_path = os.path.join(event_dir, "verification_report.json")
 
         # Split into verified and rejected
-        verified_results = [r for r in results if r.visual_status == VisualStatus.VERIFIED_BUILDING]
-        rejected_results = [r for r in results if r.visual_status != VisualStatus.VERIFIED_BUILDING]
+        verified_results = [r for r in results if r.visual_status == VisualStatus.VERIFIED_VISIBLE_BUILDING]
+        rejected_results = [r for r in results if r.visual_status != VisualStatus.VERIFIED_VISIBLE_BUILDING]
 
         # 1. Verification Report
         report_data = []
@@ -90,7 +89,7 @@ class EventExporter:
             txt_file.write("VERIFIED VISIBLE BUILDINGS\n==========================\n\n")
 
             if not verified_results:
-                txt_file.write("NO_VISUALLY_VERIFIED_BUILDINGS\n\n")
+                txt_file.write("NO_VISUALLY_VERIFIED_VISIBLE_BUILDINGS\n\n")
             else:
                 for idx, b_info in enumerate(verified_results, start=1):
                     building_id = f"V{idx:03d}"
@@ -176,11 +175,17 @@ class EventExporter:
 
         if imagery.rgb_image_path and os.path.exists(png_path) and os.path.getsize(png_path) > 0:
             try:
+                # Determine which buildings need drawing on production overlay
+                prod_bldgs = [r for r in results if r.visual_status and r.visual_status.value in ("VERIFIED_VISIBLE_BUILDING", "PROBABLE_BUILDING")]
+                bldgs_to_process = results if settings.generate_debug_overlay else prod_bldgs
+                
                 # FAST-PATH FOR ZERO BUILDINGS
-                if len(verified_results) == 0:
+                if len(bldgs_to_process) == 0:
                     t0 = time.perf_counter()
                     import shutil
-                    shutil.copy(png_path, overlay_path)
+                    shutil.copyfile(png_path, overlay_path)
+                    if settings.generate_debug_overlay:
+                        shutil.copyfile(png_path, diagnostic_overlay_path)
                     print(f"\nOVERLAY PERFORMANCE\n-------------------\nBuildings: 0\nTOTAL: {(time.perf_counter()-t0):.4f}s\n")
                     return event_dir
                 
@@ -205,8 +210,6 @@ class EventExporter:
                 with rasterio.open(imagery.rgb_image_path) as src:
                     src_crs = src.crs
                     inv_transform = ~src.transform
-                    width = src.width
-                    height = src.height
                 
                 project_to_src = pyproj.Transformer.from_crs("EPSG:4326", src_crs, always_xy=True).transform
                 t_transform = time.perf_counter() - t_transform_start
@@ -234,10 +237,16 @@ class EventExporter:
                     label_mode = "NONE" # Force fast path for many buildings
                 
                 # Process verified results to find index for production labels
-                verified_map = {id(r): f"V{(i+1):03d}" for i, r in enumerate(verified_results)}
+                verified_and_probable_map = {}
+                index_counter = 1
+                for i, r in enumerate(results):
+                    status = r.visual_status.value if r.visual_status else "UNKNOWN"
+                    if status in ("VERIFIED_VISIBLE_BUILDING", "PROBABLE_BUILDING"):
+                        verified_and_probable_map[id(r)] = f"V{index_counter:03d}"
+                        index_counter += 1
                 
-                # If only production overlay is needed, only loop through verified
-                bldgs_to_process = results if settings.generate_debug_overlay else verified_results
+                # If only production overlay is needed, only loop through verified/probable
+                bldgs_to_process = results if settings.generate_debug_overlay else [r for r in results if r.visual_status and r.visual_status.value in ("VERIFIED_VISIBLE_BUILDING", "PROBABLE_BUILDING")]
                 
                 for r in bldgs_to_process:
                     # F. Bounding box rejection
@@ -262,28 +271,47 @@ class EventExporter:
                     # G. PIL drawing
                     t_d_start = time.perf_counter()
                     status = r.visual_status.value if r.visual_status else "UNKNOWN"
-                    is_verified = status == "VERIFIED_BUILDING"
+                    is_verified = status == "VERIFIED_VISIBLE_BUILDING"
+                    is_probable = status == "PROBABLE_BUILDING"
                     
                     for exterior_coords in pixel_polys:
                         if diag_draw:
                             if status in ["REJECTED_NON_BUILDING", "UNRESOLVED", "UNKNOWN"]:
                                 diag_draw.polygon(exterior_coords, outline=(255, 0, 0, 255), width=2)
-                            elif status == "PROBABLE_BUILDING":
+                            elif is_probable:
                                 diag_draw.polygon(exterior_coords, outline=(255, 255, 0, 255), width=2)
                             elif is_verified:
                                 diag_draw.polygon(exterior_coords, outline=(0, 255, 0, 255), width=2)
                                 
                         if is_verified:
                             prod_draw.polygon(exterior_coords, outline=(255, 0, 255, 255), width=2)
+                        elif is_probable:
+                            # Draw dashed outline for probable building
+                            dash_length = 5
+                            for i in range(len(exterior_coords) - 1):
+                                x1, y1 = exterior_coords[i]
+                                x2, y2 = exterior_coords[i+1]
+                                dx, dy = x2 - x1, y2 - y1
+                                dist = (dx**2 + dy**2)**0.5
+                                if dist == 0:
+                                    continue
+                                dashes = int(dist / dash_length)
+                                for j in range(dashes):
+                                    if j % 2 == 0:
+                                        sx = x1 + dx * (j / dashes)
+                                        sy = y1 + dy * (j / dashes)
+                                        ex = x1 + dx * ((j + 1) / dashes)
+                                        ey = y1 + dy * ((j + 1) / dashes)
+                                        prod_draw.line([(sx, sy), (ex, ey)], fill=(255, 255, 0, 255), width=2)
                     t_draw += (time.perf_counter() - t_d_start)
                     
-                    # F. Labels (only for verified)
-                    if is_verified and label_mode != "NONE" and polys:
+                    # F. Labels (only for verified or probable)
+                    if (is_verified or is_probable) and label_mode != "NONE" and polys:
                         t_l_start = time.perf_counter()
                         poly = polys[0]
                         cx, cy = poly.centroid.x, poly.centroid.y
                         px, py = to_pixels(cx, cy)
-                        b_id = verified_map.get(id(r), "")
+                        b_id = verified_and_probable_map.get(id(r), "")
                         
                         if label_mode == "FULL":
                             text_str = f"{b_id}\nL:{r.long_axis_meters:.1f}m\nW:{r.short_axis_meters:.1f}m"
@@ -306,7 +334,7 @@ class EventExporter:
                 
                 t_total = time.perf_counter() - t_total_start
                 
-                print(f"\\nOVERLAY PERFORMANCE\\n-------------------")
+                print("\\nOVERLAY PERFORMANCE\\n-------------------")
                 print(f"Buildings: {len(bldgs_to_process)}")
                 print(f"Image loading: {t_img:.4f}s")
                 print(f"Coordinate transform init: {t_transform:.4f}s")

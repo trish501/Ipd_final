@@ -1,9 +1,11 @@
 import os
 import gzip
 import csv
+import sys
+csv.field_size_limit(sys.maxsize)
 import requests
 from requests.exceptions import RequestException
-from typing import Dict, Optional, Tuple, List
+from typing import List, Optional, Tuple
 from shapely import wkt
 from shapely.geometry import Polygon
 from shapely.strtree import STRtree
@@ -114,7 +116,7 @@ class GoogleOpenBuildingsBatchSource:
                     )
                     buildings.append(b)
                     geometries.append(poly)
-                except Exception as e:
+                except Exception:
                     pass
 
         if not buildings:

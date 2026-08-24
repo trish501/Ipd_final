@@ -3,13 +3,11 @@ import numpy as np
 import rasterio
 from rasterio.mask import mask
 import geopandas as gpd
-from shapely.geometry import Polygon
 from typing import List
 
 from src.models.output import BuildingInfo, ImageryResult
 from src.models.enums import VisualStatus
 from src.utils.logger import logger
-from src.config import settings
 
 class VisualValidator:
     def __init__(self):
@@ -47,9 +45,8 @@ class VisualValidator:
                     candidate.visual_status = VisualStatus.UNRESOLVED
                     
                     native_gsd = imagery.native_resolution_m if imagery.native_resolution_m and imagery.native_resolution_m > 0 else 10.0
-                    
                     pixels_short_axis = candidate.short_axis_meters / native_gsd
-                    pixels_long_axis = candidate.long_axis_meters / native_gsd
+                    
                     
                     candidate.attributes["native_gsd_m"] = native_gsd
                     candidate.attributes["estimated_native_pixels_short_axis"] = pixels_short_axis
@@ -114,7 +111,6 @@ class VisualValidator:
                             if np.any(common_mask):
                                 nir = nir_pixels[0][common_mask].astype(np.float32)
                                 r_com = rgb_pixels[0][common_mask].astype(np.float32)
-                                g_com = rgb_pixels[1][common_mask].astype(np.float32)
                             else:
                                 nir = nir_pixels[0].compressed().astype(np.float32)
                             
@@ -205,14 +201,14 @@ class VisualValidator:
                         candidate.rejection_reason = f"No meaningful contrast with background (diff={color_diff:.0f})"
                         continue
 
-                    # VERIFIED_BUILDING CLASSIFICATION (STAGE 10)
+                    # VERIFIED_VISIBLE_BUILDING CLASSIFICATION (STAGE 10)
                     has_source_agreement = (candidate.source_agreement == "BOTH")
                     
                     if candidate.pixel_support in ["HIGH", "MEDIUM"]:
                         if candidate.attributes["STRUCTURAL_EVIDENCE"] or has_source_agreement:
-                            candidate.visual_status = VisualStatus.VERIFIED_BUILDING
+                            candidate.visual_status = VisualStatus.VERIFIED_VISIBLE_BUILDING
                             candidate.rejection_reason = "None"
-                            candidate.attributes["decision"] = "VERIFIED_BUILDING"
+                            candidate.attributes["decision"] = "VERIFIED_VISIBLE_BUILDING"
                         else:
                             candidate.visual_status = VisualStatus.PROBABLE_BUILDING
                             candidate.rejection_reason = "Medium/High support but lacks structural or source agreement."
@@ -220,7 +216,7 @@ class VisualValidator:
                     elif candidate.pixel_support == "LOW":
                         # Require unusually strong independent evidence
                         if candidate.attributes["STRUCTURAL_EVIDENCE"] and has_source_agreement:
-                            candidate.visual_status = VisualStatus.VERIFIED_BUILDING
+                            candidate.visual_status = VisualStatus.VERIFIED_VISIBLE_BUILDING
                             candidate.rejection_reason = "None"
                         else:
                             candidate.visual_status = VisualStatus.UNRESOLVED

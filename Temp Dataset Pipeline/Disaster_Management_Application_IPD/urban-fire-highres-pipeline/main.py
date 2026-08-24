@@ -24,13 +24,7 @@ csv_lock = threading.Lock()
 
 import sys
 import threading
-import time
 from datetime import datetime
-
-try:
-    pass
-except ImportError:
-    pass
 
 def clear_screen():
     print("\033[2J\033[H", end="")
@@ -273,7 +267,8 @@ def append_to_csv_sync(filepath, record, columns):
                     df_combined.to_csv(filepath, index=False)
                 else:
                     df_new.to_csv(filepath, mode='a', header=False, index=False)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Error reading {filepath} for deduplication, appending anyway: {e}")
                 df_new.to_csv(filepath, mode='a', header=False, index=False)
         else:
             df_new.to_csv(filepath, index=False)
@@ -424,9 +419,7 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
             "event_dir": event_dir,
             "native_resolution": download_result.get("native_resolution", ""),
             "bands_available": download_result.get("bands_available", ""),
-            "rgb_path": download_result.get("rgb_path", ""),
-            "swir_path": download_result.get("swir_path", ""),
-            "swir_nir_path": download_result.get("swir_nir_path", ""),
+            "false_color_path": download_result.get("false_color_path", ""),
             "generation_timestamp": download_result.get("generation_timestamp", "")
         }
         append_to_csv_sync(paths['image_meta'], image_record, schemas['image_meta'])
@@ -446,9 +439,16 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
         return "failed"
 
 def main():
-    user_settings = run_cli()
-    
     parser = argparse.ArgumentParser()
+    parser.add_argument("--interactive", action="store_true", help="Run interactive CLI prompt")
+    parser.add_argument("--source", type=str, default="VIIRS")
+    parser.add_argument("--loc-type", type=str, default="World")
+    parser.add_argument("--loc-val", type=str, default="World")
+    parser.add_argument("--bbox", type=str, default=None, help="comma-separated min_lat,max_lat,min_lon,max_lon")
+    parser.add_argument("--sat", type=str, default="Sentinel-2")
+    parser.add_argument("--start-date", type=str, default="01-01-2025")
+    parser.add_argument("--end-date", type=str, default="28-02-2025")
+    
     parser.add_argument("--csv-dir", type=str, default="data/csv")
     parser.add_argument("--dataset-dir", type=str, default="dataset")
     parser.add_argument("--search-days", type=int, default=3)
@@ -456,11 +456,34 @@ def main():
     parser.add_argument("--crop-km", type=float, default=2.0)
     parser.add_argument("--output-size", type=int, default=1024)
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--target-images", type=int, default=user_settings["target_images"])
+    parser.add_argument("--target-images", type=int, default=10)
     parser.add_argument("--urban-threshold", type=float, default=20.0)
     parser.add_argument("--max-workers", type=int, default=20)
+    
     args, _ = parser.parse_known_args()
-    args.target_images = user_settings["target_images"]
+    
+    if args.interactive:
+        user_settings = run_cli()
+        args.target_images = user_settings["target_images"]
+    else:
+        bbox_tuple = None
+        if args.bbox:
+            parts = [float(x.strip()) for x in args.bbox.split(",")]
+            if len(parts) == 4:
+                bbox_tuple = (parts[0], parts[1], parts[2], parts[3])
+        
+        user_settings = {
+            "source": args.source,
+            "loc_type": args.loc_type,
+            "loc_val": args.loc_val,
+            "bbox": bbox_tuple,
+            "sat": args.sat,
+            "start_str": args.start_date,
+            "end_str": args.end_date,
+            "start_dt": datetime.strptime(args.start_date, "%d-%m-%Y"),
+            "end_dt": datetime.strptime(args.end_date, "%d-%m-%Y"),
+            "target_images": args.target_images
+        }
     
     init_cache()
     init_offline_filter()
@@ -547,8 +570,7 @@ def main():
         ],
         'image_meta': [
             "event_id", "satellite", "satellite_acquisition_date", "satellite_acquisition_time", 
-            "event_dir", "native_resolution", "bands_available", "rgb_path", "swir_path", 
-            "swir_nir_path", "generation_timestamp"
+            "event_dir", "native_resolution", "bands_available", "false_color_path", "generation_timestamp"
         ],
         'verification': ["event_id", "verification_status", "dataset_category"]
     }

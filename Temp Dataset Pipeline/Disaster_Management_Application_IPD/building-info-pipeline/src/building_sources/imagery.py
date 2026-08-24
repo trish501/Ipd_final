@@ -1,6 +1,4 @@
 import os
-import urllib.request
-from typing import Optional
 from datetime import datetime
 import concurrent.futures
 
@@ -234,7 +232,6 @@ class Sentinel2STACSource:
                 footprint_src = Polygon([(left, bottom), (right, bottom), (right, top), (left, top), (left, bottom)])
                 wgs84 = pyproj.CRS("EPSG:4326")
                 project_to_wgs84 = pyproj.Transformer.from_crs(src_crs, wgs84, always_xy=True).transform
-                from shapely.ops import transform
                 footprint_wgs84 = transform(project_to_wgs84, footprint_src)
                 
                 epsg_code = src_crs.to_epsg() or 4326

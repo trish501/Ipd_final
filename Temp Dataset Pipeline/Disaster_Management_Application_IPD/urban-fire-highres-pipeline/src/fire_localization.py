@@ -59,37 +59,15 @@ class FireLocalizationResult:
     labeled_components: np.ndarray
     config: LocalizationConfig
 
+import scipy.ndimage
+
 def connected_components_8way(mask: np.ndarray) -> Tuple[np.ndarray, int]:
     """
     Simple 8-way connected components labeling for a 2D boolean mask.
     Returns: labeled_array, num_features
     """
-    labeled = np.zeros_like(mask, dtype=np.int32)
-    label_count = 0
-    rows, cols = mask.shape
-    
-    stack = []
-    
-    for r in range(rows):
-        for c in range(cols):
-            if mask[r, c] and labeled[r, c] == 0:
-                label_count += 1
-                labeled[r, c] = label_count
-                stack.append((r, c))
-                
-                while stack:
-                    curr_r, curr_c = stack.pop()
-                    
-                    for dr in [-1, 0, 1]:
-                        for dc in [-1, 0, 1]:
-                            if dr == 0 and dc == 0:
-                                continue
-                            nr, nc = curr_r + dr, curr_c + dc
-                            if 0 <= nr < rows and 0 <= nc < cols:
-                                if mask[nr, nc] and labeled[nr, nc] == 0:
-                                    labeled[nr, nc] = label_count
-                                    stack.append((nr, nc))
-                                    
+    structure = np.ones((3, 3), dtype=int)
+    labeled, label_count = scipy.ndimage.label(mask, structure=structure)
     return labeled, label_count
 
 def localize_fire_candidates(

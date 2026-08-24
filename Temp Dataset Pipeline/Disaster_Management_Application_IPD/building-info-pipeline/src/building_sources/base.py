@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List
+
 
 from src.models.aoi import AOI
 from src.models.output import BuildingSearchResult

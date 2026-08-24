@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import json
 import threading
@@ -22,7 +24,8 @@ def get_urban_cache(lat: float, lon: float):
         try:
             with open(path, 'r') as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to read cache {path}: {e}")
             return None
     return None
 
@@ -40,7 +43,8 @@ def get_search_cache(lat: float, lon: float, date_str: str, time_str: str):
         try:
             with open(path, 'r') as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to read cache {path}: {e}")
             return None
     return None
 
@@ -58,7 +62,8 @@ def get_grid_search_cache(grid_x: int, grid_y: int, date_str: str):
         try:
             with open(path, 'r') as f:
                 return json.load(f)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Failed to read cache {path}: {e}")
             return None
     return None
 

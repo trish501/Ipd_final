@@ -16,8 +16,6 @@ EVENTS_DIR = os.path.join(DATASET_DIR, "unreviewed", "events")
 # API Configs
 FIRMS_API_BASE = "https://firms.modaps.eosdis.nasa.gov/api/area/csv"
 
-MAX_RETRIES = 3
-API_BACKOFF = 2.0
 GEOCODE_TIMEOUT = 5
 GEOCODE_DELAY = 1.1 # Strict Nominatim 1-req-per-sec limit
 

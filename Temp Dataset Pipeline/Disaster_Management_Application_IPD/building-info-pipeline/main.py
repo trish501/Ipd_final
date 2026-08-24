@@ -4,14 +4,14 @@ import csv
 import sys
 import time
 import concurrent.futures
-from typing import List, Dict, Tuple, Optional
+from typing import List, Dict, Tuple
 from collections import defaultdict
 
 from src.config import settings
 from src.utils.logger import logger
 from src.models.input import InputEvent
 from src.models.aoi import AOI
-from src.models.output import Building, ImageryResult
+from src.models.output import ImageryResult
 from src.models.enums import PipelineState, CoverageStatus
 from src.building_sources.google_open_buildings import GoogleOpenBuildingsBatchSource
 from src.building_sources.microsoft_footprints import MicrosoftBuildingFootprintsBatchSource
@@ -261,7 +261,7 @@ class BatchPipelineOrchestrator:
             no_struct = sum(1 for b in b_infos if getattr(b, "pixel_support", "") != "INSUFFICIENT" and not b.attributes.get("STRUCTURAL_EVIDENCE", True) and not b.attributes.get("VEGETATION_REJECTION", False) and not b.attributes.get("WATER_REJECTION", False) and not b.attributes.get("SHADOW_REJECTION", False))
             
             from src.models.enums import VisualStatus
-            v_bld = sum(1 for b in b_infos if b.visual_status == VisualStatus.VERIFIED_BUILDING)
+            v_bld = sum(1 for b in b_infos if b.visual_status == VisualStatus.VERIFIED_VISIBLE_BUILDING)
             p_bld = sum(1 for b in b_infos if b.visual_status == VisualStatus.PROBABLE_BUILDING)
             u_bld = sum(1 for b in b_infos if b.visual_status == VisualStatus.UNRESOLVED)
             r_bld = sum(1 for b in b_infos if b.visual_status == VisualStatus.REJECTED_NON_BUILDING)
@@ -275,7 +275,7 @@ class BatchPipelineOrchestrator:
             print(f"Shadow: {shadow_rej}")
             print(f"Insufficient structural evidence: {no_struct}")
             print()
-            print(f"VERIFIED_BUILDING: {v_bld}")
+            print(f"VERIFIED_VISIBLE_BUILDING: {v_bld}")
             print(f"PROBABLE_BUILDING: {p_bld}")
             print(f"UNRESOLVED: {u_bld}")
             print(f"REJECTED: {r_bld}")
@@ -303,28 +303,10 @@ class BatchPipelineOrchestrator:
             
         return final_counts
 
-def main():
-    args = parse_args()
-    events = []
-    
-    if args.batch:
-        with open(args.batch, "r") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                events.append(InputEvent(
-                    event_id=row["event_id"],
-                    latitude=float(row["lat"]),
-                    longitude=float(row["lon"])
-                ))
-    elif args.event_id and args.lat is not None and args.lon is not None:
-        events.append(InputEvent(
-            event_id=args.event_id,
-            latitude=args.lat,
-            longitude=args.lon
-        ))
-    else:
-        print("Error: Must provide either --batch or (--event-id, --lat, --lon)")
-        sys.exit(1)
+def run_pipeline(events: List[InputEvent], args):
+    if not events:
+        print("No events to process.")
+        return
         
     print(f"Processing {len(events)} events (Radius: {args.radius}m, Mode: {settings.building_source_mode})")
     
@@ -336,6 +318,100 @@ def main():
     
     orchestrator.benchmark = args.benchmark
     orchestrator.run(events)
+
+
+def run_interactive_menu(args):
+    while True:
+        print("\n========================================")
+        print("      BUILDING INFO PIPELINE")
+        print("========================================")
+        print("\n1. Process a single event")
+        print("2. Process a batch")
+        print("3. Process events interactively")
+        print("4. Exit\n")
+        
+        try:
+            choice = input("Enter your choice: ").strip()
+            if choice == "1":
+                event_id = input("Enter Event ID: ").strip()
+                lat_str = input("Enter Latitude: ").strip()
+                lon_str = input("Enter Longitude: ").strip()
+                try:
+                    lat = float(lat_str)
+                    lon = float(lon_str)
+                except ValueError:
+                    print("Error: Latitude and Longitude must be valid numbers.")
+                    continue
+                events = [InputEvent(event_id=event_id, latitude=lat, longitude=lon)]
+                run_pipeline(events, args)
+                break
+            elif choice == "2":
+                batch_path = input("Enter path to batch CSV: ").strip()
+                if not os.path.exists(batch_path):
+                    print(f"Error: File '{batch_path}' not found.")
+                    continue
+                events = []
+                with open(batch_path, "r") as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        events.append(InputEvent(
+                            event_id=row["event_id"],
+                            latitude=float(row["lat"]),
+                            longitude=float(row["lon"])
+                        ))
+                run_pipeline(events, args)
+                break
+            elif choice == "3":
+                print("\nInteractive events mode selected. This falls back to single event mode for now.")
+                event_id = input("Enter Event ID: ").strip()
+                lat_str = input("Enter Latitude: ").strip()
+                lon_str = input("Enter Longitude: ").strip()
+                try:
+                    lat = float(lat_str)
+                    lon = float(lon_str)
+                except ValueError:
+                    print("Error: Latitude and Longitude must be valid numbers.")
+                    continue
+                events = [InputEvent(event_id=event_id, latitude=lat, longitude=lon)]
+                run_pipeline(events, args)
+                break
+            elif choice == "4":
+                print("Exiting.")
+                break
+            else:
+                print("Invalid choice. Please enter 1, 2, 3, or 4.")
+        except (KeyboardInterrupt, EOFError):
+            print("\nExiting.")
+            break
+
+
+def main():
+    args = parse_args()
+    
+    if args.batch:
+        events = []
+        with open(args.batch, "r") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                events.append(InputEvent(
+                    event_id=row["event_id"],
+                    latitude=float(row["lat"]),
+                    longitude=float(row["lon"])
+                ))
+        run_pipeline(events, args)
+        return
+        
+    elif args.event_id and args.lat is not None and args.lon is not None:
+        events = [InputEvent(
+            event_id=args.event_id,
+            latitude=args.lat,
+            longitude=args.lon
+        )]
+        run_pipeline(events, args)
+        return
+
+    # If no arguments provided, launch the interactive menu
+    run_interactive_menu(args)
 
 if __name__ == "__main__":
     main()

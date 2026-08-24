@@ -1,10 +1,10 @@
+from src.models.output import BuildingInfo
+from src.models.output import Building
 from typing import List, Tuple
 from shapely.geometry import Polygon
 from shapely.strtree import STRtree
-import copy
 
 from src.models.aoi import AOI
-from src.models.output import BuildingSearchResult, Building
 from src.models.enums import BuildingRetrievalState
 from src.building_sources.base import BaseBuildingSource
 from src.building_sources.google_open_buildings import GoogleOpenBuildingsBatchSource

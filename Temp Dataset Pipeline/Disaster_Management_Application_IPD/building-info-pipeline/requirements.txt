@@ -1,0 +1,9 @@
+pyproj
+shapely
+rasterio
+geopandas
+s2sphere
+requests
+Pillow
+pystac-client
+planetary-computer

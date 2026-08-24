@@ -221,33 +221,6 @@ def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir
         save_mask_png(rev_mask, "phase4_review_required_regions.png")
         save_mask_png(rej_mask, "phase4_rejected_regions.png")
         
-        print("============================================================")
-        print(f"EVENT ID: {event_meta.get('event_id', 'unknown')}")
-        print(f"FIRMS Source: {event_meta.get('source', 'unknown')}")
-        print(f"FIRMS Point (Lon, Lat): {event_meta.get('longitude')}, {event_meta.get('latitude')}")
-        print(f"Projected 20m (x, y): {event_meta.get('firms_x_20m')}, {event_meta.get('firms_y_20m')}")
-        print(f"Crop Size: {ms_data.b04.shape[0]}x{ms_data.b04.shape[1]} at {ms_data.transform.a}m resolution")
-        print(f"Phase 3 Candidate Pixels: {np.sum(detection_result.candidate_mask)}")
-        print(f"Phase 4 Components Found: {len(localization_result.accepted_components) + len(localization_result.review_required_components) + len(localization_result.rejected_components)}")
-        print(f"  - Accepted for YOLO Export: {len(localization_result.accepted_components)}")
-        print(f"  - Review Required: {len(localization_result.review_required_components)}")
-        print(f"  - Rejected: {len(localization_result.rejected_components)}")
-        
-        all_comps = localization_result.accepted_components + localization_result.review_required_components + localization_result.rejected_components
-        print("Component Distances from FIRMS (m):")
-        for c in all_comps:
-            print(f"  - Comp {c.component_id}: {c.distance_to_firms_m:.1f}m")
-            
-        print("Rejection/Review Reasons Triggered:")
-        from collections import Counter
-        reasons_counter = Counter()
-        for comp in localization_result.rejected_components + localization_result.review_required_components:
-            for r in comp.decision_reasons:
-                reasons_counter[r] += 1
-        for reason, count in reasons_counter.items():
-            print(f"  - {reason}: {count}")
-        print("============================================================\n")
-        
         fire_mask = localization_result.cleaned_candidate_mask
         fire_candidate_bbox = compute_candidate_bounding_box(fire_mask, ms_data.transform)
         

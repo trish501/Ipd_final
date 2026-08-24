@@ -195,7 +195,8 @@ def load_events_from_csv(start_date_obj, end_date_obj, source_choice, bbox=None)
                 if pd.isna(t) or t == '': return ''
                 try:
                     return str(int(float(t))).zfill(4)
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"Failed to parse time {t}: {e}")
                     return ''
                     
             df['time'] = df['acq_time'].apply(format_time)

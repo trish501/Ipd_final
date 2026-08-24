@@ -1,0 +1,32 @@
+# Python caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.env
+.venv/
+venv/
+env/
+
+# Generated Data / Caches
+cache/
+outputs/
+dataset/
+YOLO_dataset/
+
+# Pipeline-specific generated directories
+data/csv/
+data/shapefiles/
+
+# Large binaries and logs
+*.tif
+*.tiff
+*.csv.gz
+*.geojson
+*.png
+*.jpg
+*.jpeg
+*.log

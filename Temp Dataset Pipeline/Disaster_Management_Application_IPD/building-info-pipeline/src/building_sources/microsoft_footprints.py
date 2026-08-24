@@ -5,7 +5,7 @@ import json
 import requests
 import hashlib
 from requests.exceptions import RequestException
-from typing import Dict, Optional, Tuple, List
+from typing import List, Optional, Tuple
 from shapely.geometry import shape, Polygon
 from shapely.strtree import STRtree
 import math
@@ -161,7 +161,7 @@ class MicrosoftBuildingFootprintsBatchSource:
                     )
                     buildings.append(b)
                     geometries.append(geom)
-                except Exception as e:
+                except Exception:
                     pass
 
         if not buildings:
