@@ -11,7 +11,9 @@ pipeline.log
 
 # Downloaded data (large files)
 data/csv/
-data/shapefiles/
+# IMPORTANT:
+# Natural Earth production shapefiles are intentionally NOT ignored.
+# Do not add data/shapefiles/ to cleanup or generated-data rules.
 
 # Legacy paths
 data/output/

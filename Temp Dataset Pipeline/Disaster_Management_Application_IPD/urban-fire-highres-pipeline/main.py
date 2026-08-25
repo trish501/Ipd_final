@@ -462,7 +462,7 @@ def main():
     
     args, _ = parser.parse_known_args()
     
-    if args.interactive:
+    if args.interactive or len(sys.argv) == 1:
         user_settings = run_cli()
         args.target_images = user_settings["target_images"]
     else:

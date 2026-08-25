@@ -16,15 +16,34 @@ def init_offline_filter():
         
     shapefile_path = "data/shapefiles/ne_10m_urban_areas.shp"
     required_files = [
-        "data/shapefiles/ne_10m_urban_areas.shp",
-        "data/shapefiles/ne_10m_urban_areas.shx",
-        "data/shapefiles/ne_10m_urban_areas.dbf",
-        "data/shapefiles/ne_10m_urban_areas.prj"
+        "ne_10m_urban_areas.shp",
+        "ne_10m_urban_areas.shx",
+        "ne_10m_urban_areas.dbf",
+        "ne_10m_urban_areas.prj"
     ]
+    missing = []
     for rf in required_files:
-        if not os.path.exists(rf):
-            logger.error(f"Shapefile companion missing: {rf}")
-            return False
+        full_path = os.path.join("data/shapefiles", rf)
+        if not os.path.exists(full_path):
+            missing.append(rf)
+            
+    if missing:
+        missing_str = "\n".join([f"- {m}" for m in missing])
+        error_msg = f"""ERROR: REQUIRED_URBAN_SHAPEFILE_MISSING
+
+Missing required Natural Earth Urban Areas dataset.
+
+Expected directory:
+urban-fire-highres-pipeline/data/shapefiles/
+
+Missing files:
+{missing_str}
+
+Urban filtering cannot run without this production dependency.
+Restore the official Natural Earth 10m Urban Areas shapefile before running."""
+        print(f"\n{error_msg}\n")
+        import sys
+        sys.exit(1)
         
     try:
         logger.info("Loading offline urban boundaries into memory...")
