@@ -10,8 +10,9 @@ from shapely.geometry import shape, Polygon
 from shapely.strtree import STRtree
 import math
 
-from src.models.output import Building
-from src.utils.logger import logger
+from dimensions.models import Building
+import logging
+logger = logging.getLogger(__name__)
 
 def latlon_to_quadkey(lat: float, lon: float, level: int = 9) -> str:
     """Calculates the Bing Maps QuadKey for a given lat/lon at a specific level."""
@@ -126,6 +127,9 @@ class MicrosoftBuildingFootprintsBatchSource:
         minx, miny, maxx, maxy = batch_bounds
         batch_poly = Polygon.from_bounds(minx, miny, maxx, maxy)
         
+        from shapely.prepared import prep
+        prepared_batch_poly = prep(batch_poly)
+        
         logger.info(f"Parsing Microsoft partition {self._get_filename_from_url(url)} within bounds {batch_bounds}...")
         
         with gzip.open(cache_path, mode='rt', encoding='utf-8') as f:
@@ -145,7 +149,7 @@ class MicrosoftBuildingFootprintsBatchSource:
                         continue
                         
                     # Exact intersection
-                    if not geom.intersects(batch_poly):
+                    if not prepared_batch_poly.intersects(geom):
                         continue
                         
                     props = feat.get("properties", {})

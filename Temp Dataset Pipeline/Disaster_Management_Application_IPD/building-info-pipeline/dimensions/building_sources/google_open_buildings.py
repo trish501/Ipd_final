@@ -11,8 +11,9 @@ from shapely.geometry import Polygon
 from shapely.strtree import STRtree
 import s2sphere
 
-from src.models.output import Building
-from src.utils.logger import logger
+from dimensions.models import Building
+import logging
+logger = logging.getLogger(__name__)
 
 class GoogleOpenBuildingsBatchSource:
     def __init__(self, cache_dir: str = "cache/google"):
@@ -74,6 +75,10 @@ class GoogleOpenBuildingsBatchSource:
         geometries = []
         minx, miny, maxx, maxy = batch_bounds
         
+        from shapely.prepared import prep
+        batch_poly = Polygon.from_bounds(minx, miny, maxx, maxy)
+        prepared_batch_poly = prep(batch_poly)
+        
         logger.info(f"Parsing Google partition {cell_token} within bounds {batch_bounds}...")
         
         with gzip.open(cache_path, mode='rt', encoding='utf-8') as f:
@@ -99,8 +104,8 @@ class GoogleOpenBuildingsBatchSource:
                     if not poly.is_valid or poly.area == 0:
                         continue
                         
-                    # Stage 2 bbox intersection via Shapely
-                    if not poly.intersects(Polygon.from_bounds(minx, miny, maxx, maxy)):
+                    # Stage 2 bbox intersection via Shapely prepared geometry
+                    if not prepared_batch_poly.intersects(poly):
                         continue
                         
                     confidence = float(row.get("confidence", 0.0))

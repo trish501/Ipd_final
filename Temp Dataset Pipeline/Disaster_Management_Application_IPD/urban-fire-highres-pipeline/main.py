@@ -25,8 +25,36 @@ csv_lock = threading.Lock()
 import sys
 import threading
 from datetime import datetime
+import subprocess
+
+
+def trigger_building_pipeline(event_id, lat, lon, event_dir, dashboard):
+    dashboard.update(process="Running building pipeline...")
+    try:
+        urban_dir = os.path.dirname(os.path.abspath(__file__))
+        building_pipeline_dir = os.path.abspath(os.path.join(urban_dir, "..", "building-info-pipeline"))
+        
+        cmd = [
+            sys.executable,
+            "main.py",
+            "--event-id", str(event_id),
+            "--lat", str(lat),
+            "--lon", str(lon),
+            "--event-dir", str(event_dir)
+        ]
+        
+        # Run synchronously, capture output. The thread pool naturally handles the concurrency.
+        result = subprocess.run(cmd, cwd=building_pipeline_dir, capture_output=True, text=True)
+        if result.returncode != 0:
+            logger.error(f"Building pipeline failed for {event_id}:\n{result.stderr}")
+            return False
+        return True
+    except Exception as e:
+        logger.error(f"Error triggering building pipeline for {event_id}: {e}")
+        return False
 
 def clear_screen():
+
     print("\033[2J\033[H", end="")
 
 def run_cli():
@@ -433,6 +461,10 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
         
         update_state(state_dict, state_file, event_id, "COMPLETED")
         tracker.add_result(result_type)
+        
+        # Trigger building pipeline on successful extraction/cache
+        trigger_building_pipeline(event_id, lat, lon, event_dir, dashboard)
+        
         dashboard.update(process="Image generated.", images_generated=tracker.downloaded + tracker.cached)
         return result_type
     else:
@@ -458,7 +490,7 @@ def main():
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--target-images", type=int, default=10)
     parser.add_argument("--urban-threshold", type=float, default=20.0)
-    parser.add_argument("--max-workers", type=int, default=20)
+    parser.add_argument("--max-workers", type=int, default=10)
     
     args, _ = parser.parse_known_args()
     

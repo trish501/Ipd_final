@@ -1,8 +1,8 @@
 from abc import ABC, abstractmethod
 
 
-from src.models.aoi import AOI
-from src.models.output import BuildingSearchResult
+from dimensions.aoi import AOI
+from dimensions.models import BuildingSearchResult
 
 class BaseBuildingSource(ABC):
     @property

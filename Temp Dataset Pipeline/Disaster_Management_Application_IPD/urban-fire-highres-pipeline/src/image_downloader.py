@@ -269,7 +269,8 @@ def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir
             "bands_available": ", ".join(ms_data.metadata["bands_loaded"]),
             "false_color_path": fc_path,
             "detected_fire_region_bounding_box": fire_candidate_bbox['geographic'],
-            "generation_timestamp": datetime.utcnow().isoformat()
+            "generation_timestamp": datetime.utcnow().isoformat(),
+            "canonical_aoi": ms_data.metadata.get("canonical_aoi")
         }
         
         with open(os.path.join(out_dir, "metadata.json"), 'w') as f:

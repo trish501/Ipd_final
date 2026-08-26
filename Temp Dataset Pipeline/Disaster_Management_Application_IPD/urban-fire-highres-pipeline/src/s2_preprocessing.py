@@ -5,6 +5,11 @@ from rasterio.warp import transform
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Any, Tuple
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..')))
+from shared_models.canonical_aoi import CanonicalAOI
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +74,19 @@ class S2Preprocessor:
             left, bottom, right, top = cx - half_size, cy - half_size, cx + half_size, cy + half_size
             common_transform = rasterio.transform.from_bounds(left, bottom, right, top, target_size, target_size)
             common_bounds = (left, bottom, right, top)
+            
+            canonical_aoi = CanonicalAOI(
+                center_lat=lat,
+                center_lon=lon,
+                width_m=crop_km * 1000,
+                height_m=crop_km * 1000,
+                rotation_angle_deg=0.0,
+                crs_epsg=str(crs),
+                min_x=left,
+                max_x=right,
+                min_y=bottom,
+                max_y=top
+            )
 
         for band, native_res in bands_needed.items():
             href = self.get_asset_href(item, band)
@@ -117,7 +135,8 @@ class S2Preprocessor:
             "analysis_resolution_m": common_res,
             "crs": str(crs),
             "dimensions": (target_size, target_size),
-            "masked_pixel_percentage": float(masked_percentage)
+            "masked_pixel_percentage": float(masked_percentage),
+            "canonical_aoi": canonical_aoi.to_dict()
         }
 
         return MultispectralData(
