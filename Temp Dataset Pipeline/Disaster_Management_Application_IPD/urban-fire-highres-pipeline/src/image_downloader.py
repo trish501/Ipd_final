@@ -97,7 +97,7 @@ def scale_to_8bit(arr):
     scaled = arr * 255.0
     return np.clip(scaled, 0, 255).astype(np.uint8)
 
-def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir: str, crop_km: float = 2.0, output_size: int = 1024, event_meta: dict = None):
+def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir: str, crop_km: float = 2.0, output_size: int = 1024, event_meta: dict = None, mode: str = "BASELINE_B4_B11_B12", is_industrial: bool = False):
     """
     Downloads native Sentinel-2 bands using S2Preprocessor, generates active-fire analysis, 
     and outputs a false-color visualization.
@@ -136,6 +136,8 @@ def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir
             swir_ratio_thresh=1.0,
             swir_red_ratio_thresh=1.5,
             b04_bright_reject_thresh=0.3,
+            min_b12_b8a_ratio_thresh=1.5,
+            max_nbr_thresh=-0.1,
             retained_features=('b08', 'swir_red_diff', 'norm_swir_diff', 'red_swir_contrast', 'ndvi')
         )
         detection_result = detect_fire_candidate(features, config)
@@ -153,7 +155,10 @@ def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir
             reject_invalid_edge_components=True,
             morphology_enabled=False,
             morphology_operation="none",
-            morphology_iterations=0
+            morphology_iterations=0,
+            mode=mode,
+            min_b12_b8a_ratio=0.5,
+            max_ndvi_b8a=0.3
         )
         if event_meta is None:
             event_meta = {}
@@ -224,8 +229,8 @@ def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir
         fire_mask = localization_result.cleaned_candidate_mask
         fire_candidate_bbox = compute_candidate_bounding_box(fire_mask, ms_data.transform)
         
-        # 4. VISUALIZATION (False Color B12-B08-B04)
-        fc_arr = np.stack([ms_data.b12, ms_data.b08, ms_data.b04], axis=-1)
+        # 4. VISUALIZATION (YOLO B12-B11-B04)
+        fc_arr = np.stack([ms_data.b12, ms_data.b11, ms_data.b04], axis=-1)
         fc_img = Image.fromarray(scale_to_8bit(fc_arr), 'RGB')
         
         # --- PHASE 5: YOLO EXPORT ---
@@ -234,7 +239,8 @@ def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir
             clean_fc_img=fc_img,
             ms_data=ms_data,
             event_meta=event_meta,
-            dataset_root="YOLO_dataset"
+            dataset_root="YOLO_dataset",
+            is_industrial=is_industrial
         )
         
         if fire_candidate_bbox is None:
@@ -248,14 +254,14 @@ def download_and_crop_image(item, lat: float, lon: float, event_id: str, out_dir
         pix = fire_candidate_bbox['pixel']
         draw.rectangle([pix['min_col'], pix['min_row'], pix['max_col'], pix['max_row']], outline="red", width=1)
         
-        fc_path = os.path.join(vis_dir, "B12-B8-B4.jpg")
+        fc_path = os.path.join(vis_dir, "B12-B11-B4.jpg")
         fc_img.save(fc_path, quality=90)
         
         write_image_metadata(
-            txt_path=os.path.join(vis_dir, "B12-B8-B4.txt"),
-            image_type="False Color (SWIR2-NIR-Red)",
-            bands_text=["B12 - SWIR2", "B08 - NIR", "B04 - Red"],
-            band_order_list=["B12", "B08", "B04"],
+            txt_path=os.path.join(vis_dir, "B12-B11-B4.txt"),
+            image_type="YOLO Input (SWIR2-SWIR1-Red)",
+            bands_text=["B12 - SWIR2", "B11 - SWIR1", "B04 - Red"],
+            band_order_list=["B12", "B11", "B04"],
             item=item,
             event_meta=event_meta,
             crs_val=str(ms_data.crs),

@@ -22,6 +22,9 @@ class LocalizationConfig:
     morphology_enabled: bool
     morphology_operation: str
     morphology_iterations: int
+    mode: str
+    min_b12_b8a_ratio: float
+    max_ndvi_b8a: float
 
 @dataclass
 class FireComponent:
@@ -44,8 +47,11 @@ class FireComponent:
     median_b04: float
     median_b11: float
     median_b12: float
+    median_b08a: float
     median_swir_ratio: float
     median_swir_red_ratio: float
+    median_b12_b8a_ratio: float
+    median_ndvi_b8a: float
     decision: str
     decision_reasons: List[str]
     eligible_for_yolo_export: bool
@@ -114,7 +120,7 @@ def localize_fire_candidates(
     
     event_id = event_metadata.get('event_id', 'unknown')
     
-    firms_source = str(event_metadata.get('source', '')).upper()
+    firms_source = str(event_metadata.get('source_file', event_metadata.get('source', ''))).upper()
     if 'VIIRS' in firms_source:
         max_dist_m = config.max_firms_viirs_distance_m
     elif 'MODIS' in firms_source:
@@ -163,8 +169,11 @@ def localize_fire_candidates(
         median_b4 = float(np.median(features.b04[comp_mask]))
         median_b11 = float(np.median(features.b11[comp_mask]))
         median_b12 = float(np.median(features.b12[comp_mask]))
+        median_b08a = float(np.median(features.b08a[comp_mask]))
         median_ratio_12_11 = float(np.median(features.swir_ratio[comp_mask]))
         median_ratio_12_4 = float(np.median(features.swir_red_ratio[comp_mask]))
+        median_b12_b8a_ratio = float(np.median(features.b12_b8a_ratio[comp_mask]))
+        median_ndvi_b8a = float(np.median(features.ndvi_b8a[comp_mask]))
         
         reasons = []
         
@@ -194,6 +203,13 @@ def localize_fire_candidates(
         # Check if NO_VALID_SPECTRAL_EVIDENCE
         if median_b12 <= 0.0 or median_ratio_12_11 <= 0.0:
             reasons.append("NO_VALID_SPECTRAL_EVIDENCE")
+            
+        b8a_review_reasons = []
+        if config.mode == "B8A_AUXILIARY":
+            if median_b12_b8a_ratio < config.min_b12_b8a_ratio:
+                b8a_review_reasons.append("LOW_B12_B8A_RATIO")
+            if median_ndvi_b8a > config.max_ndvi_b8a:
+                b8a_review_reasons.append("HIGH_NDVI_B8A")
         
         if len(reasons) > 0:
             decision = "REJECTED"
@@ -201,6 +217,11 @@ def localize_fire_candidates(
         elif pixel_count < config.min_auto_export_pixels or area_m2 < config.min_auto_export_area_m2:
             decision = "REVIEW_REQUIRED"
             reasons.append("INSUFFICIENT_EVIDENCE_FOR_AUTO_EXPORT")
+            reasons.extend(b8a_review_reasons)
+            eligible_for_yolo_export = False
+        elif len(b8a_review_reasons) > 0:
+            decision = "REVIEW_REQUIRED"
+            reasons.extend(b8a_review_reasons)
             eligible_for_yolo_export = False
         else:
             decision = "ACCEPTED_FOR_AUTO_EXPORT"
@@ -226,8 +247,11 @@ def localize_fire_candidates(
             median_b04=median_b4,
             median_b11=median_b11,
             median_b12=median_b12,
+            median_b08a=median_b08a,
             median_swir_ratio=median_ratio_12_11,
             median_swir_red_ratio=median_ratio_12_4,
+            median_b12_b8a_ratio=median_b12_b8a_ratio,
+            median_ndvi_b8a=median_ndvi_b8a,
             decision=decision,
             decision_reasons=reasons,
             eligible_for_yolo_export=eligible_for_yolo_export

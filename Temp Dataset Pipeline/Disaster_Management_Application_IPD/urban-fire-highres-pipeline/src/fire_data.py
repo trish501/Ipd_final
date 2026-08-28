@@ -7,12 +7,17 @@ from config.settings import FIRMS_API_BASE, CSV_DIR
 logger = logging.getLogger(__name__)
 
 def get_firms_api_key():
-    env_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env")
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            for line in f:
-                if line.startswith("NASA_FIRMS_API_KEY="):
-                    return line.strip().split("=")[1]
+    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    env_paths = [
+        os.path.join(base_dir, ".env"),
+        os.path.join(os.path.dirname(base_dir), ".env")
+    ]
+    for env_path in env_paths:
+        if os.path.exists(env_path):
+            with open(env_path, 'r') as f:
+                for line in f:
+                    if line.startswith("NASA_FIRMS_API_KEY="):
+                        return line.strip().split("=")[1]
     return None
 
 def plan_required_requests(start_date_obj, end_date_obj, source_choice):

@@ -95,7 +95,7 @@ def scale_to_8bit(arr):
     scaled = arr * 255.0
     return np.clip(scaled, 0, 255).astype(np.uint8)
 
-def process_yolo_export(localization_result, clean_fc_img, ms_data, event_meta, dataset_root="YOLO_dataset"):
+def process_yolo_export(localization_result, clean_fc_img, ms_data, event_meta, dataset_root="YOLO_dataset", is_industrial=False):
     """
     Main Phase 5 entry point.
     """
@@ -147,7 +147,14 @@ def process_yolo_export(localization_result, clean_fc_img, ms_data, event_meta, 
         "components": []
     }
     
-    split = get_deterministic_split(event_id)
+    if is_industrial:
+        split = "industrial_false_class1"
+        class_id_override = 1
+        class_name_override = "industrial_flare"
+    else:
+        split = get_deterministic_split(event_id)
+        class_id_override = 0
+        class_name_override = "fire_candidate"
     os.makedirs(os.path.join(dataset_root, "manifests"), exist_ok=True)
     splits_csv = os.path.join(dataset_root, "manifests", "splits.csv")
     splits_exists = os.path.exists(splits_csv)
@@ -189,7 +196,7 @@ def process_yolo_export(localization_result, clean_fc_img, ms_data, event_meta, 
     draw_orig = ImageDraw.Draw(diag_img)
     
     # Generate SWIR and RGB images
-    swir_arr = np.stack([ms_data.b12, ms_data.b11, ms_data.b04], axis=-1)
+    swir_arr = np.stack([ms_data.b12, ms_data.b11, ms_data.b08a], axis=-1)
     rgb_arr = np.stack([ms_data.b04, ms_data.b03, ms_data.b02], axis=-1)
     
     swir_img = Image.fromarray(scale_to_8bit(swir_arr), 'RGB')
@@ -227,7 +234,7 @@ def process_yolo_export(localization_result, clean_fc_img, ms_data, event_meta, 
         
         yolo_data = generate_yolo_label(
             rgb_x_min, rgb_x_max, rgb_y_min, rgb_y_max, 
-            image_width, image_height, class_id=0
+            image_width, image_height, class_id=class_id_override
         )
         labels.append(yolo_data["label_line"])
         
@@ -245,7 +252,7 @@ def process_yolo_export(localization_result, clean_fc_img, ms_data, event_meta, 
         swir_metadata_list.append({
             "event_id": event_id,
             "component_id": comp.component_id,
-            "overlay_type": "SWIR_B12_B11_B04",
+            "overlay_type": "SWIR_B12_B11_B8A",
             "source_image_path": img_path,
             "overlay_image_path": swir_out_path,
             "box_coordinates_used": box_coords,
@@ -259,7 +266,7 @@ def process_yolo_export(localization_result, clean_fc_img, ms_data, event_meta, 
         rgb_metadata_list.append({
             "event_id": event_id,
             "component_id": comp.component_id,
-            "overlay_type": "RGB_B04_B03_B02",
+            "overlay_type": "TRUE_RGB_B04_B03_B02",
             "source_image_path": img_path,
             "overlay_image_path": rgb_out_path,
             "box_coordinates_used": box_coords,
@@ -309,8 +316,8 @@ def process_yolo_export(localization_result, clean_fc_img, ms_data, event_meta, 
             "y_center_norm": yolo_data["y_center_norm"],
             "width_norm": yolo_data["width_norm"],
             "height_norm": yolo_data["height_norm"],
-            "class_id": 0,
-            "class_name": "fire_candidate",
+            "class_id": class_id_override,
+            "class_name": class_name_override,
             "split": split
         })
         

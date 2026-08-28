@@ -14,6 +14,7 @@ class MultispectralData:
     b03: np.ndarray  # Green, scaled to surface reflectance
     b04: np.ndarray  # Red, scaled to surface reflectance
     b08: np.ndarray  # Broad NIR, scaled to surface reflectance
+    b08a: np.ndarray # Narrow NIR, scaled to surface reflectance
     b11: np.ndarray  # SWIR1, scaled to surface reflectance
     b12: np.ndarray  # SWIR2, scaled to surface reflectance
     valid_mask: np.ndarray  # Boolean mask of valid data (True = valid)
@@ -49,6 +50,7 @@ class S2Preprocessor:
             "B03": 10.0, # Green
             "B04": 10.0, # Red
             "B08": 10.0, # Broad NIR
+            "B8A": 20.0, # Narrow NIR
             "B11": 20.0, # SWIR1
             "B12": 20.0, # SWIR2
             "SCL": 20.0  # Scene Classification Layer
@@ -98,13 +100,20 @@ class S2Preprocessor:
                 else:
                     band_data[band] = raw_data
 
-        # Valid Mask (Pixels where all required bands are valid/non-zero)
-        valid_mask = (band_data["B02"] > 0) & (band_data["B03"] > 0) & (band_data["B04"] > 0) & (band_data["B08"] > 0) & (band_data["B11"] > 0) & (band_data["B12"] > 0)
-        
         # Cloud Mask from SCL
         # Classes: 3=Cloud Shadows, 8=Cloud Medium Prob, 9=Cloud High Prob, 10=Thin Cirrus
         scl = band_data["SCL"]
         cloud_mask = (scl == 3) | (scl == 8) | (scl == 9) | (scl == 10)
+        
+        # Exclude NoData (0), Defective (1), and Snow/Ice (11) along with clouds from valid pixels
+        invalid_scl = (scl == 0) | (scl == 1) | (scl == 11) | cloud_mask
+        
+        # Valid Mask (Pixels where all required physical bands are valid AND SCL is valid)
+        valid_mask = (
+            (band_data["B02"] > 0) & (band_data["B03"] > 0) & (band_data["B04"] > 0) & 
+            (band_data["B08"] > 0) & (band_data["B8A"] > 0) & (band_data["B11"] > 0) & 
+            (band_data["B12"] > 0) & ~invalid_scl
+        )
         
         masked_percentage = (np.sum(cloud_mask) / cloud_mask.size) * 100.0
         
@@ -125,6 +134,7 @@ class S2Preprocessor:
             b03=band_data["B03"],
             b04=band_data["B04"],
             b08=band_data["B08"],
+            b08a=band_data["B8A"],
             b11=band_data["B11"],
             b12=band_data["B12"],
             valid_mask=valid_mask,
