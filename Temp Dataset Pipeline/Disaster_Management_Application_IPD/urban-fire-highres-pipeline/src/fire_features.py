@@ -15,6 +15,8 @@ class FireFeatures:
     b11: np.ndarray
     b04: np.ndarray
     b08: np.ndarray
+    b08a: np.ndarray
+
     
     # Derived Ratios and Indices
     swir_ratio: np.ndarray         # B12 / B11
@@ -23,6 +25,12 @@ class FireFeatures:
     norm_swir_diff: np.ndarray     # (B12 - B11) / (B12 + B11)
     red_swir_contrast: np.ndarray  # 0.734 * B12 - B04
     ndvi: np.ndarray               # (B08 - B04) / (B08 + B04)
+    b12_b8a_ratio: np.ndarray    # B12 / B8A
+    b11_b8a_ratio: np.ndarray    # B11 / B8A
+    swir21_b8a_contrast: np.ndarray # (B12 - B11) / B8A
+    ndvi_b8a: np.ndarray           # (B8A - B04) / (B8A + B04)
+    nbr: np.ndarray                # (B8A - B12) / (B8A + B12)
+
     
     # Geospatial and Validity context preserved from preprocessing
     valid_mask: np.ndarray
@@ -73,17 +81,36 @@ class FeatureGenerator:
         nir_red_sum = b08 + b04
         ndvi = self._safe_divide(b08 - b04, nir_red_sum)
         
+        # 11. B8A Auxiliary Features
+        b08a = ms_data.b08a
+        b12_b8a_ratio = self._safe_divide(b12, b08a)
+        b11_b8a_ratio = self._safe_divide(b11, b08a)
+        swir21_b8a_contrast = self._safe_divide(b12 - b11, b08a)
+        
+        nir_narrow_red_sum = b08a + b04
+        ndvi_b8a = self._safe_divide(b08a - b04, nir_narrow_red_sum)
+        
+        # 12. Normalized Burn Ratio: (B8A - B12) / (B8A + B12)
+        nbr_sum = b08a + b12
+        nbr = self._safe_divide(b08a - b12, nbr_sum)
+        
         return FireFeatures(
             b12=b12,
             b11=b11,
             b04=b04,
             b08=b08,
+            b08a=b08a,
             swir_ratio=swir_ratio,
             swir_red_ratio=swir_red_ratio,
             swir_red_diff=swir_red_diff,
             norm_swir_diff=norm_swir_diff,
             red_swir_contrast=red_swir_contrast,
             ndvi=ndvi,
+            b12_b8a_ratio=b12_b8a_ratio,
+            b11_b8a_ratio=b11_b8a_ratio,
+            swir21_b8a_contrast=swir21_b8a_contrast,
+            ndvi_b8a=ndvi_b8a,
+            nbr=nbr,
             valid_mask=ms_data.valid_mask,
             cloud_mask=ms_data.cloud_mask,
             transform=ms_data.transform,

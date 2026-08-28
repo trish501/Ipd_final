@@ -14,6 +14,7 @@ from src.satellite_search import search_satellite_imagery
 from src.image_downloader import download_and_crop_image
 
 from src.offline_urban_filter import init_offline_filter, is_in_urban_area
+from src.offline_industrial_filter import init_industrial_filter, is_near_industrial
 from src.cache import init_cache
 
 logging.basicConfig(level=logging.INFO, format='%(message)s', filename='pipeline.log', filemode='w')
@@ -25,36 +26,8 @@ csv_lock = threading.Lock()
 import sys
 import threading
 from datetime import datetime
-import subprocess
-
-
-def trigger_building_pipeline(event_id, lat, lon, event_dir, dashboard):
-    dashboard.update(process="Running building pipeline...")
-    try:
-        urban_dir = os.path.dirname(os.path.abspath(__file__))
-        building_pipeline_dir = os.path.abspath(os.path.join(urban_dir, "..", "building-info-pipeline"))
-        
-        cmd = [
-            sys.executable,
-            "main.py",
-            "--event-id", str(event_id),
-            "--lat", str(lat),
-            "--lon", str(lon),
-            "--event-dir", str(event_dir)
-        ]
-        
-        # Run synchronously, capture output. The thread pool naturally handles the concurrency.
-        result = subprocess.run(cmd, cwd=building_pipeline_dir, capture_output=True, text=True)
-        if result.returncode != 0:
-            logger.error(f"Building pipeline failed for {event_id}:\n{result.stderr}")
-            return False
-        return True
-    except Exception as e:
-        logger.error(f"Error triggering building pipeline for {event_id}: {e}")
-        return False
 
 def clear_screen():
-
     print("\033[2J\033[H", end="")
 
 def run_cli():
@@ -159,6 +132,22 @@ def run_cli():
             print("Example:\n01-01-2025\n")
 
     clear_screen()
+    print("PIPELINE MODE\n")
+    print("1) BASELINE_B4_B11_B12")
+    print("   Scientific baseline using only B4, B11, B12.")
+    print("2) B8A_AUXILIARY")
+    print("   Uses B8A for false-positive suppression.\n")
+    mode = "BASELINE_B4_B11_B12"
+    while True:
+        c = input("Enter choice [1]: ").strip()
+        if c == '1' or c == '': 
+            mode = "BASELINE_B4_B11_B12"
+            break
+        elif c == '2':
+            mode = "B8A_AUXILIARY"
+            break
+
+    clear_screen()
     print("TARGET IMAGES\n")
     print("Enter how many successful fire-event images you want.\n")
     print("Example:\n30\n")
@@ -180,6 +169,7 @@ def run_cli():
     print(f"Start Date  : {start_str}")
     print(f"End Date    : {end_str}")
     print(f"Satellite   : {sat}")
+    print(f"Mode        : {mode}")
     print(f"Target      : {target_images} images\n")
     print("============================================================\n")
     print("Starting pipeline...\n")
@@ -195,6 +185,7 @@ def run_cli():
         "end_str": end_str,
         "start_dt": start_dt,
         "end_dt": end_dt,
+        "mode": mode,
         "target_images": target_images
     }
 
@@ -255,7 +246,9 @@ class ProgressTracker:
         self.target_images = target_images
         self.processed = 0
         self.downloaded = 0
+        self.downloaded_industrial = 0
         self.cached = 0
+        self.cached_industrial = 0
         self.failed = 0
         self.skipped_urban = 0
         self.skipped_no_sat = 0
@@ -269,8 +262,12 @@ class ProgressTracker:
             self.processed += 1
             if result_type == "downloaded":
                 self.downloaded += 1
+            elif result_type == "downloaded_industrial":
+                self.downloaded_industrial += 1
             elif result_type == "cached":
                 self.cached += 1
+            elif result_type == "cached_industrial":
+                self.cached_industrial += 1
             elif result_type == "failed":
                 self.failed += 1
             elif result_type == "skipped_urban":
@@ -280,7 +277,7 @@ class ProgressTracker:
             elif result_type == "skipped_black":
                 self.skipped_black += 1
                 
-            if self.target_images > 0 and (self.downloaded + self.cached) >= self.target_images:
+            if self.target_images > 0 and (self.downloaded + self.downloaded_industrial + self.cached + self.cached_industrial) >= self.target_images:
                 self.stop_requested = True
 
 def append_to_csv_sync(filepath, record, columns):
@@ -363,6 +360,17 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
         dashboard.update(process="Processing next event...")
         return "skipped_urban"
     
+    # Offline Industrial Filter
+    is_industrial = False
+    industrial_check = is_near_industrial(lat, lon)
+    if industrial_check == "INDUSTRIAL_FILTER_VALIDATION_FAILED":
+        update_state(state_dict, state_file, event_id, "FAILED")
+        tracker.add_result("skipped_industrial") # Keep this just for failure tracking
+        dashboard.update(process="Processing next event...")
+        return "INDUSTRIAL_FILTER_VALIDATION_FAILED"
+    elif industrial_check:
+        is_industrial = True
+    
     # Generate geographic evidence record using the offline Natural Earth data
     geo_record = {
         "event_id": event_id,
@@ -418,7 +426,9 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
             out_dir=event_dir,
             crop_km=args.crop_km,
             output_size=args.output_size,
-            event_meta=event
+            event_meta=event,
+            mode=args.mode,
+            is_industrial=is_industrial
         )
         
         if download_result and isinstance(download_result, dict) and "error" in download_result:
@@ -460,12 +470,15 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
         append_to_csv_sync(paths['verification'], verif_record, schemas['verification'])
         
         update_state(state_dict, state_file, event_id, "COMPLETED")
+        
+        if is_industrial:
+            if result_type == "downloaded":
+                result_type = "downloaded_industrial"
+            elif result_type == "cached":
+                result_type = "cached_industrial"
+            
         tracker.add_result(result_type)
-        
-        # Trigger building pipeline on successful extraction/cache
-        trigger_building_pipeline(event_id, lat, lon, event_dir, dashboard)
-        
-        dashboard.update(process="Image generated.", images_generated=tracker.downloaded + tracker.cached)
+        dashboard.update(process="Image generated.", images_generated=tracker.downloaded + tracker.downloaded_industrial + tracker.cached + tracker.cached_industrial)
         return result_type
     else:
         return "failed"
@@ -478,6 +491,7 @@ def main():
     parser.add_argument("--loc-val", type=str, default="World")
     parser.add_argument("--bbox", type=str, default=None, help="comma-separated min_lat,max_lat,min_lon,max_lon")
     parser.add_argument("--sat", type=str, default="Sentinel-2")
+    parser.add_argument("--mode", type=str, default="BASELINE_B4_B11_B12", choices=["BASELINE_B4_B11_B12", "B8A_AUXILIARY"])
     parser.add_argument("--start-date", type=str, default="01-01-2025")
     parser.add_argument("--end-date", type=str, default="28-02-2025")
     
@@ -490,13 +504,14 @@ def main():
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--target-images", type=int, default=10)
     parser.add_argument("--urban-threshold", type=float, default=20.0)
-    parser.add_argument("--max-workers", type=int, default=10)
+    parser.add_argument("--max-workers", type=int, default=20)
     
     args, _ = parser.parse_known_args()
     
     if args.interactive or len(sys.argv) == 1:
         user_settings = run_cli()
         args.target_images = user_settings["target_images"]
+        args.mode = user_settings["mode"]
     else:
         bbox_tuple = None
         if args.bbox:
@@ -519,6 +534,7 @@ def main():
     
     init_cache()
     init_offline_filter()
+    init_industrial_filter()
     
     events_dir = os.path.join(args.dataset_dir, "unreviewed", "events")
     metadata_dir = os.path.join(args.dataset_dir, "metadata")
@@ -614,8 +630,8 @@ def main():
     def monitor_progress():
         while not tracker.stop_requested and tracker.processed < tracker.total:
             dashboard.update(
-                images_generated=f"{tracker.downloaded + tracker.cached}",
-                process=f"Processed: {tracker.processed} / {tracker.total}\nFailed: {tracker.failed} | Rejected: {tracker.skipped_urban + tracker.skipped_no_sat + tracker.skipped_black}"
+                images_generated=f"{tracker.downloaded + tracker.downloaded_industrial + tracker.cached + tracker.cached_industrial}",
+                process=f"Processed: {tracker.processed} / {tracker.total}\nFailed: {tracker.failed} | Rejected: {tracker.skipped_urban + tracker.skipped_no_sat + tracker.skipped_black}\nClass 1 (Industrial): {tracker.downloaded_industrial + tracker.cached_industrial}"
             )
             dashboard.render()
             time.sleep(0.1)
@@ -629,7 +645,7 @@ def main():
         event_iter = iter(events_to_process)
         
         while not tracker.stop_requested:
-            successful = tracker.downloaded + tracker.cached
+            successful = tracker.downloaded + tracker.downloaded_industrial + tracker.cached + tracker.cached_industrial
             remaining = args.target_images - successful
             
             if remaining <= 0:
@@ -671,7 +687,7 @@ def main():
     dashboard.render()
     print("\n============================================================")
     print("Pipeline completed successfully.")
-    print(f"Images generated: {tracker.downloaded + tracker.cached}")
+    print(f"Images generated: {tracker.downloaded + tracker.cached} (True) + {tracker.downloaded_industrial + tracker.cached_industrial} (Industrial) = {tracker.downloaded + tracker.cached + tracker.downloaded_industrial + tracker.cached_industrial} Total")
     print(f"Failed events: {tracker.failed}")
     print(f"Rejected events: {tracker.skipped_urban + tracker.skipped_no_sat + tracker.skipped_black}")
     print(f"Output directory: {paths['events_dir']}")

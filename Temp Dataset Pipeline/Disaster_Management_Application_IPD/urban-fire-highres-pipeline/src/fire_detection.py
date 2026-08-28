@@ -15,6 +15,8 @@ class FireCandidateConfig:
     swir_ratio_thresh: float
     swir_red_ratio_thresh: float
     b04_bright_reject_thresh: float
+    min_b12_b8a_ratio_thresh: float
+    max_nbr_thresh: float
     retained_features: tuple[str, ...]
 
 @dataclass
@@ -25,6 +27,8 @@ class FireDetectionResult:
     b12_b11_ratio_mask: np.ndarray
     b12_b4_ratio_mask: np.ndarray
     b04_brightness_rejection_mask: np.ndarray
+    b12_b8a_ratio_mask: np.ndarray
+    nbr_rejection_mask: np.ndarray
     diagnostics: dict
     config: FireCandidateConfig
 
@@ -54,7 +58,9 @@ def detect_fire_candidate(
         np.isfinite(features.b11) & 
         np.isfinite(features.b04) & 
         np.isfinite(features.swir_ratio) & 
-        np.isfinite(features.swir_red_ratio)
+        np.isfinite(features.swir_red_ratio) &
+        np.isfinite(features.b12_b8a_ratio) &
+        np.isfinite(features.nbr)
     )
 
     # 3. Use the exact logic, with clear intermediate variables
@@ -63,6 +69,8 @@ def detect_fire_candidate(
 
     R12_11 = features.swir_ratio
     R12_4  = features.swir_red_ratio
+    R12_8a = features.b12_b8a_ratio
+    nbr    = features.nbr
 
     # Force invalid/non-finite pixels to false by using bitwise AND with finite_mask
     with np.errstate(invalid='ignore'):
@@ -70,10 +78,12 @@ def detect_fire_candidate(
         C2 = (R12_11 >= config.swir_ratio_thresh) & finite_mask
         C3 = (R12_4 >= config.swir_red_ratio_thresh) & finite_mask
         C4 = (ρ4 < config.b04_bright_reject_thresh) & finite_mask
+        C5 = (R12_8a >= config.min_b12_b8a_ratio_thresh) & finite_mask
+        C6 = (nbr <= config.max_nbr_thresh) & finite_mask
 
     V = features.valid_mask & finite_mask
 
-    candidate_mask = V & C1 & C2 & C3 & C4
+    candidate_mask = V & C1 & C2 & C3 & C4 & C5 & C6
 
     # 4. Create Diagnostics
     diagnostics = {
@@ -83,19 +93,23 @@ def detect_fire_candidate(
         "b12_b11_criterion_pixels": int(np.sum(C2)),
         "b12_b4_criterion_pixels": int(np.sum(C3)),
         "b4_brightness_rejection_pixels": int(np.sum(C4)),
+        "b12_b8a_criterion_pixels": int(np.sum(C5)),
+        "nbr_rejection_pixels": int(np.sum(C6)),
         "final_candidate_pixels": int(np.sum(candidate_mask)),
         "threshold_values": {
             "swir2_abs_thresh": config.swir2_abs_thresh,
             "swir_ratio_thresh": config.swir_ratio_thresh,
             "swir_red_ratio_thresh": config.swir_red_ratio_thresh,
-            "b04_bright_reject_thresh": config.b04_bright_reject_thresh
+            "b04_bright_reject_thresh": config.b04_bright_reject_thresh,
+            "min_b12_b8a_ratio_thresh": config.min_b12_b8a_ratio_thresh,
+            "max_nbr_thresh": config.max_nbr_thresh
         },
-        "feature_names_actually_used": ["b12", "b11", "b04", "swir_ratio", "swir_red_ratio", "valid_mask"],
+        "feature_names_actually_used": ["b12", "b11", "b04", "swir_ratio", "swir_red_ratio", "b12_b8a_ratio", "nbr", "valid_mask"],
         "feature_names_explicitly_retained_but_unused": list(config.retained_features),
-        "baseline_detector_uses_b8": False,
+        "baseline_detector_uses_b8": True,
         "baseline_detector_uses_ndvi": False,
         "detector_output_semantics": "spectral fire candidate mask",
-        "baseline_bands_used": ["B04", "B11", "B12"],
+        "baseline_bands_used": ["B04", "B08A", "B11", "B12"],
         "experimental_features_excluded": ["B08", "NDVI"],
         "scientific_limitations": [
             "FIRMS is a spatial/temporal cue, not a pixel-level label.",
@@ -112,6 +126,8 @@ def detect_fire_candidate(
         b12_b11_ratio_mask=C2,
         b12_b4_ratio_mask=C3,
         b04_brightness_rejection_mask=C4,
+        b12_b8a_ratio_mask=C5,
+        nbr_rejection_mask=C6,
         diagnostics=diagnostics,
         config=config
     )
