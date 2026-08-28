@@ -190,7 +190,9 @@ def display_success(result):
     print_thin_separator()
     print("\nOUTPUT\n")
     
-    if result.input.event_id:
+    if result.input.event_dir:
+        out_folder = result.input.event_dir
+    elif result.input.event_id:
         out_folder = f"dimensions/outputs/{result.input.event_id}"
     else:
         inst_name = result.input.institution_name.replace(' ', '_') if result.input.institution_name else "Fire_Event"
@@ -334,7 +336,11 @@ def run_non_interactive(args):
             buildings=[],
             error=str(e)
         )
-        if input_data.event_id:
+        if input_data.event_dir:
+            out_folder = input_data.event_dir
+            os.makedirs(out_folder, exist_ok=True)
+            pipeline.exporter.export_all(result, out_folder)
+        elif input_data.event_id:
             import os
             from dimensions.config import OUTPUTS_DIR
             out_folder = os.path.join(OUTPUTS_DIR, input_data.event_id)

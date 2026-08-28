@@ -7,6 +7,16 @@ import threading
 import json
 import pandas as pd
 from concurrent.futures import ThreadPoolExecutor
+import subprocess
+
+# GDAL / Rasterio Optimizations for Cloud Optimized GeoTIFFs (COGs)
+# These drastically reduce network roundtrips when downloading small image crops
+os.environ["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR"
+os.environ["CPL_VSIL_CURL_ALLOWED_EXTENSIONS"] = "tif,tiff"
+os.environ["VSI_CACHE"] = "TRUE"
+os.environ["VSI_CACHE_SIZE"] = "536870912"
+os.environ["GDAL_HTTP_MULTIMAC"] = "YES"
+os.environ["GDAL_HTTP_MERGE_CONSECUTIVE_RANGES"] = "YES"
 
 from src.fire_data import load_events_from_csv, get_firms_api_key
 from src.filters import get_bounding_box
@@ -211,34 +221,18 @@ class Dashboard:
 
     def render(self):
         with self.lock:
-            if self.lines_drawn > 0:
-                sys.stdout.write(f"\033[{self.lines_drawn}A")
+            # Minimal, single-line output using carriage return
+            # Clean up newlines from process if any
+            clean_process = str(self.process).replace('\n', ' | ')
+            out = f"\r[ {self.spinner[self.spinner_idx]} ] Images: {self.images_generated}/{self.target_images} | {clean_process}"
             
-            lines = [
-                "============================================================",
-                "          URBAN FIRE SATELLITE DATASET PIPELINE",
-                "============================================================",
-                "",
-                f"Status: {self.status}",
-                "",
-                f"Data Source: {self.data_source}",
-                f"Location: {self.location_str}",
-                f"Date: {self.date_str}",
-                "",
-                f"Images: {self.images_generated} / {self.target_images}",
-                "",
-                "Process:",
-                self.process,
-                "",
-                f"Loading: {self.spinner[self.spinner_idx]}",
-                "============================================================",
-            ]
-            self.spinner_idx = (self.spinner_idx + 1) % len(self.spinner)
+            # Pad to ensure previous longer strings are overwritten, but cap at terminal width to avoid line wrapping
+            out = out.ljust(100)[:100]
             
-            out = "\n".join(lines) + "\n"
             sys.stdout.write(out)
             sys.stdout.flush()
-            self.lines_drawn = len(lines)
+            self.spinner_idx = (self.spinner_idx + 1) % len(self.spinner)
+            self.lines_drawn = 1
 
 class ProgressTracker:
     def __init__(self, total, target_images):
@@ -386,6 +380,9 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
     update_state(state_dict, state_file, event_id, "GRID_ASSIGNED")
     dashboard.update(process="Checking event...")
     
+    if tracker.stop_requested:
+        return "skipped_stopped"
+        
     # Satellite Search (Grid indexed automatically in search_satellite_imagery)
     item = search_satellite_imagery(
         lat=lat, 
@@ -411,6 +408,9 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
     
     event_dir = os.path.join(paths['events_dir'], event_id)
     
+    if tracker.stop_requested:
+        return "skipped_stopped"
+        
     # Check if event_dir exists and has contents (basic cache check)
     dashboard.update(process="Downloading satellite imagery...")
     if os.path.exists(event_dir) and os.path.exists(os.path.join(event_dir, "metadata.json")):
@@ -470,6 +470,32 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
         append_to_csv_sync(paths['verification'], verif_record, schemas['verification'])
         
         update_state(state_dict, state_file, event_id, "COMPLETED")
+        
+        # Trigger building pipeline
+        try:
+            dashboard.update(process="Running building pipeline...")
+            building_main = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "building-info-pipeline", "main.py"))
+            subprocess.run([
+                sys.executable, building_main,
+                "--lat", str(lat),
+                "--lon", str(lon),
+                "--event-id", str(event_id),
+                "--event-dir", str(event_dir)
+            ], check=True, capture_output=True)
+        except Exception as e:
+            logger.error(f"Building pipeline failed for {event_id}: {e}")
+            
+        # Copy building image to YOLO dataset if the event was selected for YOLO
+        import shutil
+        building_png = os.path.join(event_dir, "institution_measurement.png")
+        if os.path.exists(building_png):
+            for split in ["train", "val", "test"]:
+                yolo_img = os.path.join(os.path.dirname(__file__), "YOLO_dataset", "images", split, f"{event_id}.jpg")
+                if os.path.exists(yolo_img):
+                    yolo_bldg_dir = os.path.join(os.path.dirname(__file__), "YOLO_dataset", "building_images", split)
+                    os.makedirs(yolo_bldg_dir, exist_ok=True)
+                    shutil.copy2(building_png, os.path.join(yolo_bldg_dir, f"{event_id}.png"))
+                    break
         
         if is_industrial:
             if result_type == "downloaded":
@@ -628,10 +654,11 @@ def main():
     tracker = ProgressTracker(len(events_to_process), args.target_images)
     
     def monitor_progress():
+        print("\nStarting generation... (Press Ctrl+C to abort)")
         while not tracker.stop_requested and tracker.processed < tracker.total:
             dashboard.update(
                 images_generated=f"{tracker.downloaded + tracker.downloaded_industrial + tracker.cached + tracker.cached_industrial}",
-                process=f"Processed: {tracker.processed} / {tracker.total}\nFailed: {tracker.failed} | Rejected: {tracker.skipped_urban + tracker.skipped_no_sat + tracker.skipped_black}\nClass 1 (Industrial): {tracker.downloaded_industrial + tracker.cached_industrial}"
+                process=f"Processed: {tracker.processed}/{tracker.total} | Failed: {tracker.failed} | Rejected: {tracker.skipped_urban + tracker.skipped_no_sat + tracker.skipped_black}"
             )
             dashboard.render()
             time.sleep(0.1)
@@ -678,8 +705,8 @@ def main():
                 except Exception as e:
                     logger.error(f"Worker exception: {e}")
                     
-        # When target is reached, cancel pending tasks but allow active ones to finish.
-        executor.shutdown(wait=True, cancel_futures=True)
+        # When target is reached, cancel pending tasks and exit immediately.
+        executor.shutdown(wait=False, cancel_futures=True)
         
     tracker.stop_requested = True 
     dashboard.status = "Completed"
@@ -693,6 +720,10 @@ def main():
     print(f"Output directory: {paths['events_dir']}")
     print("============================================================")
     logger.info(f"Pipeline completed in {time.time() - start_time:.2f} seconds.")
+    
+    # Force exit to prevent hanging on active threads (safe due to csv_lock)
+    with csv_lock:
+        os._exit(0)
 
 if __name__ == "__main__":
     main()

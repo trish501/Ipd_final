@@ -132,20 +132,36 @@ class MicrosoftBuildingFootprintsBatchSource:
         
         logger.info(f"Parsing Microsoft partition {self._get_filename_from_url(url)} within bounds {batch_bounds}...")
         
+        import re
+        # Extremely fast regex to grab the first lon/lat coordinate from the raw JSON string
+        coord_pattern = re.compile(r'\"coordinates\"\s*:\s*\[+([-\d\.]+)\s*,\s*([-\d\.]+)')
+        
         with gzip.open(cache_path, mode='rt', encoding='utf-8') as f:
             for line in f:
                 if not line.strip():
                     continue
+                    
+                # Stage 0: Ultra-fast regex check to skip json.loads completely
+                match = coord_pattern.search(line)
+                if match:
+                    try:
+                        lon = float(match.group(1))
+                        lat = float(match.group(2))
+                        # 0.05 degrees is ~5km buffer
+                        if lon < minx - 0.05 or lon > maxx + 0.05 or lat < miny - 0.05 or lat > maxy + 0.05:
+                            continue
+                    except ValueError:
+                        pass
+
                 try:
                     feat = json.loads(line)
-                    geom = shape(feat.get("geometry", {}))
-                    
-                    if not geom.is_valid or geom.area == 0:
+                    geom_dict = feat.get("geometry", {})
+                    if not geom_dict or "coordinates" not in geom_dict:
                         continue
                         
-                    # Fast bounding box check first
-                    g_minx, g_miny, g_maxx, g_maxy = geom.bounds
-                    if g_minx > maxx or g_maxx < minx or g_miny > maxy or g_maxy < miny:
+                    geom = shape(geom_dict)
+                    
+                    if not geom.is_valid or geom.area == 0:
                         continue
                         
                     # Exact intersection

@@ -70,7 +70,9 @@ class DimensionsPipeline:
         
         # 2. Search Satellite Imagery FIRST
         t4 = time.time()
-        if input_data.event_id:
+        if input_data.event_dir:
+            out_folder = input_data.event_dir
+        elif input_data.event_id:
             out_folder = os.path.join(OUTPUTS_DIR, input_data.event_id)
         else:
             inst_name = input_data.institution_name.replace(' ', '_') if input_data.institution_name else "Location"
@@ -80,9 +82,9 @@ class DimensionsPipeline:
         
         sat_warning = None
         try:
-            logger.info("Attempting to fetch high-res Esri World Imagery...")
+            logger.info("Attempting to fetch high-res satellite imagery...")
             img_data = fetch_high_res_basemap(vis_bounds_wgs84, zoom=18, canonical_aoi=canonical_aoi)
-            result.imagery.provider = "Esri World Imagery"
+            result.imagery.provider = img_data["metadata"]["provider"]
             result.imagery.product_id = img_data["metadata"]["scene_id"]
             result.imagery.acquisition_datetime = img_data["metadata"]["acquisition_datetime"]
             result.imagery.bands = ["Red", "Green", "Blue"]
@@ -113,7 +115,7 @@ class DimensionsPipeline:
         logger.info("Fetching all building footprints within image extent...")
         try:
             image_bounds_wgs84 = vis_bounds_wgs84
-            candidates = self.selector.get_candidate_buildings(image_bounds_wgs84)
+            candidates = self.selector.get_candidate_buildings(image_bounds_wgs84, rgb_image_path=temp_rgb_path)
             
             google_c = sum(1 for b in candidates if b.source == "GoogleOpenBuildings")
             ms_c = sum(1 for b in candidates if b.source == "MicrosoftBuildingFootprints")
@@ -129,10 +131,11 @@ class DimensionsPipeline:
             
             if not candidates:
                 result.status = "NO_BUILDINGS_FOUND"
-                self.exporter.export_all(result, out_folder)
-                if os.path.exists(temp_rgb_path):
-                    os.remove(temp_rgb_path)
-                return result
+                # Keep going to generate PNG anyway (user request: no event should be empty)
+                # self.exporter.export_all(result, out_folder)
+                # if os.path.exists(temp_rgb_path):
+                #     os.remove(temp_rgb_path)
+                # return result
                 
         except Exception as e:
             result.status = "BUILDING_RETRIEVAL_FAILED"

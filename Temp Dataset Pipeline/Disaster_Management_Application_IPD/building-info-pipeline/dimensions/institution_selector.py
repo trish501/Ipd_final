@@ -3,7 +3,7 @@ from typing import List, Tuple
 
 from dimensions.building_sources.google_open_buildings import GoogleOpenBuildingsBatchSource
 from dimensions.building_sources.microsoft_footprints import MicrosoftBuildingFootprintsBatchSource
-
+from dimensions.building_sources.cv_segmentation import CVSegmentationSource
 
 logger = logging.getLogger(__name__)
 
@@ -11,8 +11,9 @@ class InstitutionSelector:
     def __init__(self):
         self.google_source = GoogleOpenBuildingsBatchSource()
         self.ms_source = MicrosoftBuildingFootprintsBatchSource()
+        self.cv_source = CVSegmentationSource()
         
-    def get_candidate_buildings(self, image_bounds: Tuple[float, float, float, float]) -> List:
+    def get_candidate_buildings(self, image_bounds: Tuple[float, float, float, float], rgb_image_path: str = None) -> List:
         from shapely.geometry import box
         bounds_geom = box(*image_bounds)
         # Use centroid of bounds for partition resolution
@@ -29,6 +30,12 @@ class InstitutionSelector:
                 if all_candidates_list[i].geometry.intersects(bounds_geom):
                     buildings.append(all_candidates_list[i])
                     
+        # Apply the CV segmentation source dynamically
+        if rgb_image_path:
+            cv_buildings = self.cv_source.get_buildings_from_image(rgb_image_path, image_bounds)
+            if cv_buildings:
+                buildings.extend(cv_buildings)
+                
         return buildings
         
     def _fetch_buildings(self, lat, lon, bounds):

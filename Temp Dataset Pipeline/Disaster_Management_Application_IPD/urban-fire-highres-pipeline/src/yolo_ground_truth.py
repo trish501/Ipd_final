@@ -173,6 +173,7 @@ def process_yolo_export(localization_result, clean_fc_img, ms_data, event_meta, 
         
     os.makedirs(os.path.join(dataset_root, "images", split), exist_ok=True)
     os.makedirs(os.path.join(dataset_root, "labels", split), exist_ok=True)
+    os.makedirs(os.path.join(dataset_root, "yolo_bbox", split), exist_ok=True)
     os.makedirs(os.path.join(dataset_root, "diagnostics", event_id), exist_ok=True)
     
     swir_dir = os.path.join(dataset_root, "diagnostics", "swir_overlays")
@@ -325,6 +326,7 @@ def process_yolo_export(localization_result, clean_fc_img, ms_data, event_meta, 
         f.write("\n".join(labels) + "\n")
         
     diag_img.save(os.path.join(dataset_root, "diagnostics", event_id, "yolo_overlay.jpg"), quality=90)
+    diag_img.save(os.path.join(dataset_root, "yolo_bbox", split, img_filename), quality=95)
     swir_img.save(swir_out_path, quality=90)
     rgb_img.save(rgb_out_path, quality=90)
     

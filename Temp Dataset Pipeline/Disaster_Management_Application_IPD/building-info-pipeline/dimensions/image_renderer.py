@@ -74,22 +74,25 @@ def _render_image(rgb_tif_path: str, buildings: list, institution_summary, image
         num_buildings = len(buildings)
         # Adaptive font sizes based on density
         if num_buildings < 20:
-            font_size = 7
-            label_font_size = 8
-            line_width = 1.0
+            font_size = 14
+            label_font_size = 16
+            line_width = 2.0
         elif num_buildings < 50:
-            font_size = 5
-            label_font_size = 6
-            line_width = 0.8
+            font_size = 10
+            label_font_size = 12
+            line_width = 1.5
         elif num_buildings < 100:
-            font_size = 4
-            label_font_size = 5
-            line_width = 0.5
+            font_size = 8
+            label_font_size = 10
+            line_width = 1.0
         else:
-            font_size = 3
-            label_font_size = 4
-            line_width = 0.3
-            
+            font_size = 6
+            label_font_size = 8
+            line_width = 0.5
+        # Determine which buildings get full text labels (top 15 by area) to avoid clutter
+        sorted_buildings = sorted(buildings, key=lambda x: x.footprint_area_sq_m, reverse=True)
+        buildings_to_label = {x.building_id for x in sorted_buildings[:15]}
+        
         for i, b in enumerate(buildings):
             if not b.geometry_wgs84:
                 continue
@@ -102,6 +105,11 @@ def _render_image(rgb_tif_path: str, buildings: list, institution_summary, image
                 # Outline every building
                 poly_patch = patches.Polygon(pix_coords, closed=True, fill=False, edgecolor='white', linewidth=line_width, alpha=0.9)
                 ax.add_patch(poly_patch)
+                
+                # To prevent massive clutter, only draw text and arrows for the top 15 largest buildings
+                if b.building_id not in buildings_to_label:
+                    continue
+                
                 
                 # Draw dimension lines and text for ALL buildings
                 mrr = geom_crs.minimum_rotated_rectangle
@@ -141,8 +149,8 @@ def _render_image(rgb_tif_path: str, buildings: list, institution_summary, image
                 pcx, pcy = transform_matrix * (cx, cy)
                 
                 label_text = f"{b.building_id}\n{b.length_m:.1f}×{b.width_m:.1f}m\n{b.footprint_area_sq_m:,.1f}m²"
-                ax.text(pcx, pcy, label_text, color='black', fontsize=label_font_size, ha='center', va='center', weight='bold',
-                        bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', boxstyle='round,pad=0.2'))
+                ax.text(pcx, pcy, label_text, color='white', fontsize=label_font_size, ha='center', va='center', weight='bold',
+                        bbox=dict(facecolor='green', alpha=0.4, edgecolor='none', boxstyle='round,pad=0.2'))
 
         # 3. Summary Box
         warn_str = ""
