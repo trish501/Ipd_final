@@ -7,7 +7,7 @@ function ConfigurationForm({ onStart, isRunning, activeConfig }) {
     loc_val: "World",
     bbox: "",
     sat: "Sentinel-2",
-    mode: "BASELINE_B4_B11_B12",
+    mode: "B8A_AUXILIARY",
     start_date: "01-01-2025",
     end_date: "28-02-2025",
     target_images: 1500
@@ -83,7 +83,6 @@ function ConfigurationForm({ onStart, isRunning, activeConfig }) {
           <div className="form-group">
             <label>Pipeline Mode</label>
             <select name="mode" value={config.mode} onChange={handleChange} className="form-control" disabled={isRunning}>
-              <option value="BASELINE_B4_B11_B12">Scientific Baseline (B4, B11, B12)</option>
               <option value="B8A_AUXILIARY">B8A Auxiliary (False-positive suppression)</option>
             </select>
           </div>
