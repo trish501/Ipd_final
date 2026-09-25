@@ -1,0 +1,9 @@
+ultralytics
+super-gradients
+torch
+torchvision
+pyyaml
+pandas
+matplotlib
+seaborn
+tqdm
