@@ -1,0 +1,11 @@
+# Master Dataset Configuration for Distributed Multi-Year Training
+# Instead of pointing to a single folder, we point to the generated text files.
+# The text files contain randomized, absolute paths to all images across all years on the mounted Google Drive.
+
+train: unified_train.txt
+val: unified_val.txt
+test: unified_test.txt
+
+# The dataset structure separates true fires (0) from industrial false positives (1)
+nc: 2
+names: ['active_urban_fire', 'industrial_false_positive']
