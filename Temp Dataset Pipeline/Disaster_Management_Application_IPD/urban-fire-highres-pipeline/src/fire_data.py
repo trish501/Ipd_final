@@ -222,19 +222,17 @@ def load_events_from_csv(start_date_obj, end_date_obj, source_choice, bbox=None)
     combined_df = pd.concat(all_dfs, ignore_index=True)
     
     # Deduplication
-    unique_df = combined_df.drop_duplicates(subset=['latitude', 'longitude', 'date', 'time', 'satellite'])
+    unique_df = combined_df.drop_duplicates(subset=['latitude', 'longitude', 'date', 'time', 'satellite']).reset_index(drop=True)
     
-    events = []
-    for idx, row in unique_df.iterrows():
-        events.append({
-            'event_id': f"event_{idx+1:06d}",
-            'latitude': row['latitude'],
-            'longitude': row['longitude'],
-            'date': str(row['date']),
-            'time': str(row['time']),
-            'satellite': str(row['satellite']),
-            'source_file': str(row['source_file'])
-        })
+    unique_df['event_id'] = [f"event_{i+1:06d}" for i in range(len(unique_df))]
+    
+    # Ensure types match original implementation
+    unique_df['date'] = unique_df['date'].astype(str)
+    unique_df['time'] = unique_df['time'].astype(str)
+    unique_df['satellite'] = unique_df['satellite'].astype(str)
+    unique_df['source_file'] = unique_df['source_file'].astype(str)
+    
+    events = unique_df.to_dict('records')
         
     logger.info(f"Loaded {len(events)} unique events from {len(requests_list)} required periods.")
     return events

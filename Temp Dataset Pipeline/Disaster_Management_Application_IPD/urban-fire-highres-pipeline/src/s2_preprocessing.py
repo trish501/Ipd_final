@@ -5,6 +5,7 @@ from rasterio.warp import transform
 import numpy as np
 from dataclasses import dataclass
 from typing import Dict, Any, Tuple
+import concurrent.futures
 
 logger = logging.getLogger(__name__)
 
@@ -64,41 +65,58 @@ class S2Preprocessor:
         
         # Get bounds using a reference band to establish CRS
         ref_href = self.get_asset_href(item, "B12")
-        with rasterio.open(ref_href) as src:
-            crs = src.crs
-            xs, ys = transform('EPSG:4326', crs, [lon], [lat])
-            cx, cy = xs[0], ys[0]
-            left, bottom, right, top = cx - half_size, cy - half_size, cx + half_size, cy + half_size
-            common_transform = rasterio.transform.from_bounds(left, bottom, right, top, target_size, target_size)
-            common_bounds = (left, bottom, right, top)
+        
+        env_kwargs = {
+            "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+            "CPL_VSIL_CURL_ALLOWED_EXTENSIONS": "tif",
+            "GDAL_HTTP_MULTIMAC": "YES",
+            "GDAL_HTTP_MAX_RETRY": "3",
+            "VSI_CACHE": "TRUE"
+        }
+        
+        with rasterio.Env(**env_kwargs):
+            with rasterio.open(ref_href) as src:
+                crs = src.crs
+                xs, ys = transform('EPSG:4326', crs, [lon], [lat])
+                cx, cy = xs[0], ys[0]
+                left, bottom, right, top = cx - half_size, cy - half_size, cx + half_size, cy + half_size
+                common_transform = rasterio.transform.from_bounds(left, bottom, right, top, target_size, target_size)
+                common_bounds = (left, bottom, right, top)
 
-        for band, native_res in bands_needed.items():
-            href = self.get_asset_href(item, band)
-            with rasterio.open(href) as src:
-                window = from_bounds(left, bottom, right, top, src.transform)
-                
-                # If natively 10m (B04, B08), we downsample to 20m via bilinear to match IFOV correctly.
-                # Natively 20m bands are read using nearest to preserve exact native values.
-                resampling_method = rasterio.enums.Resampling.bilinear if native_res < common_res and band != "SCL" else rasterio.enums.Resampling.nearest
-                
-                arr = src.read(
-                    window=window,
-                    out_shape=(1, target_size, target_size),
-                    resampling=resampling_method,
-                    boundless=True,
-                    fill_value=0
-                )
-                
-                raw_data = arr[0].astype(np.float32)
-                
-                if band != "SCL":
-                    # Apply scaling to get physical surface reflectance
-                    valid = raw_data > 0
-                    scaled_data = np.zeros_like(raw_data)
-                    scaled_data[valid] = (raw_data[valid] + offset) * scale_factor
-                    band_data[band] = scaled_data
-                else:
-                    band_data[band] = raw_data
+            def fetch_band(band, native_res):
+                href = self.get_asset_href(item, band)
+                with rasterio.Env(**env_kwargs):
+                    with rasterio.open(href) as src:
+                        window = from_bounds(left, bottom, right, top, src.transform)
+                        
+                        # If natively 10m (B04, B08), we downsample to 20m via bilinear to match IFOV correctly.
+                        # Natively 20m bands are read using nearest to preserve exact native values.
+                        resampling_method = rasterio.enums.Resampling.bilinear if native_res < common_res and band != "SCL" else rasterio.enums.Resampling.nearest
+                        
+                        arr = src.read(
+                            window=window,
+                            out_shape=(1, target_size, target_size),
+                            resampling=resampling_method,
+                            boundless=True,
+                            fill_value=0
+                        )
+                        
+                        raw_data = arr[0].astype(np.float32)
+                        
+                        if band != "SCL":
+                            # Apply scaling to get physical surface reflectance
+                            valid = raw_data > 0
+                            scaled_data = np.zeros_like(raw_data)
+                            scaled_data[valid] = (raw_data[valid] + offset) * scale_factor
+                            return band, scaled_data
+                        else:
+                            return band, raw_data
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=len(bands_needed)) as executor:
+                futures = [executor.submit(fetch_band, b, r) for b, r in bands_needed.items()]
+                for future in concurrent.futures.as_completed(futures):
+                    band_name, data = future.result()
+                    band_data[band_name] = data
 
         # Cloud Mask from SCL
         # Classes: 3=Cloud Shadows, 8=Cloud Medium Prob, 9=Cloud High Prob, 10=Thin Cirrus

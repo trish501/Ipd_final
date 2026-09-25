@@ -1,4 +1,7 @@
 import os
+os.environ["AWS_NO_SIGN_REQUEST"] = "YES"
+
+import os
 import logging
 import argparse
 import random
@@ -14,9 +17,13 @@ import subprocess
 os.environ["GDAL_DISABLE_READDIR_ON_OPEN"] = "EMPTY_DIR"
 os.environ["CPL_VSIL_CURL_ALLOWED_EXTENSIONS"] = "tif,tiff"
 os.environ["VSI_CACHE"] = "TRUE"
-os.environ["VSI_CACHE_SIZE"] = "536870912"
+os.environ["VSI_CACHE_SIZE"] = "1000000000"  # Increased to ~1GB
 os.environ["GDAL_HTTP_MULTIMAC"] = "YES"
 os.environ["GDAL_HTTP_MERGE_CONSECUTIVE_RANGES"] = "YES"
+os.environ["GDAL_HTTP_VERSION"] = "2" # Use HTTP/2 for multiplexing connections
+os.environ["GDAL_HTTP_MAX_RETRY"] = "5"
+os.environ["GDAL_HTTP_RETRY_DELAY"] = "1"
+os.environ["GDAL_CACHEMAX"] = "1000" # Rasterio block cache (1GB)
 
 from src.fire_data import load_events_from_csv, get_firms_api_key
 from src.filters import get_bounding_box
@@ -235,15 +242,15 @@ class Dashboard:
             self.lines_drawn = 1
 
 class ProgressTracker:
-    def __init__(self, total, target_images):
+    def __init__(self, total, target_images, initial_downloaded=0, initial_failed=0):
         self.total = total
         self.target_images = target_images
-        self.processed = 0
-        self.downloaded = 0
+        self.processed = initial_downloaded + initial_failed
+        self.downloaded = initial_downloaded
         self.downloaded_industrial = 0
         self.cached = 0
         self.cached_industrial = 0
-        self.failed = 0
+        self.failed = initial_failed
         self.skipped_urban = 0
         self.skipped_no_sat = 0
         self.skipped_black = 0
@@ -273,28 +280,78 @@ class ProgressTracker:
                 
             if self.target_images > 0 and (self.downloaded + self.downloaded_industrial + self.cached + self.cached_industrial) >= self.target_images:
                 self.stop_requested = True
+            
+            self._write_stats()
+
+    def _write_stats(self):
+        try:
+            stats = {
+                "processed": self.processed,
+                "downloaded": self.downloaded + self.downloaded_industrial,
+                "cached": self.cached + self.cached_industrial,
+                "failed": self.failed,
+                "skipped_urban": self.skipped_urban,
+                "skipped_no_sat": self.skipped_no_sat,
+                "skipped_black": self.skipped_black,
+                "total": self.total
+            }
+            # Hardcoding the path is okay here or passing it
+            metadata_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset", "metadata")
+            os.makedirs(metadata_dir, exist_ok=True)
+            with open(os.path.join(metadata_dir, "progress.json"), "w") as f:
+                json.dump(stats, f)
+        except Exception:
+            pass
+
+import csv
+_csv_written_ids = {}
 
 def append_to_csv_sync(filepath, record, columns):
-    df_new = pd.DataFrame([record], columns=columns)
     with csv_lock:
-        if os.path.exists(filepath):
-            try:
-                df_existing = pd.read_csv(filepath)
-                if 'event_id' in df_existing.columns and record.get('event_id') in df_existing['event_id'].values:
-                    df_existing = df_existing[df_existing['event_id'] != record.get('event_id')]
-                    df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                    df_combined.to_csv(filepath, index=False)
-                else:
-                    df_new.to_csv(filepath, mode='a', header=False, index=False)
-            except Exception as e:
-                logger.warning(f"Error reading {filepath} for deduplication, appending anyway: {e}")
-                df_new.to_csv(filepath, mode='a', header=False, index=False)
-        else:
-            df_new.to_csv(filepath, index=False)
+        file_exists = os.path.exists(filepath)
+        
+        # Load existing event_ids into memory once
+        if filepath not in _csv_written_ids:
+            _csv_written_ids[filepath] = set()
+            if file_exists:
+                try:
+                    df = pd.read_csv(filepath, usecols=['event_id'])
+                    _csv_written_ids[filepath] = set(df['event_id'].dropna().values)
+                except Exception as e:
+                    logger.warning(f"Error reading {filepath} for deduplication cache: {e}")
+                    
+        event_id = record.get('event_id')
+        if event_id and event_id in _csv_written_ids[filepath]:
+            return
+            
+        if event_id:
+            _csv_written_ids[filepath].add(event_id)
+            
+        mode = 'a' if file_exists else 'w'
+        try:
+            with open(filepath, mode, newline='') as f:
+                writer = csv.DictWriter(f, fieldnames=columns)
+                if not file_exists:
+                    writer.writeheader()
+                # Only write fields that are in columns
+                safe_record = {k: record.get(k, "") for k in columns}
+                writer.writerow(safe_record)
+        except Exception as e:
+            logger.warning(f"Error writing to {filepath}: {e}")
+
+_last_state_write = 0
 
 def update_state(state_dict, state_file, event_id, status):
+    global _last_state_write
     with csv_lock:
         state_dict[event_id] = status
+        
+        # Throttle JSON dump to once every 2 seconds to avoid IO bottleneck
+        current_time = time.time()
+        if current_time - _last_state_write < 2.0 and status not in ["COMPLETED", "FAILED"]:
+            return
+            
+        _last_state_write = current_time
         tmp_path = f"{state_file}.{os.getpid()}.{threading.get_ident()}.tmp"
         try:
             with open(tmp_path, 'w') as f:
@@ -341,29 +398,12 @@ def process_event(event, args, paths, schemas, tracker, state_dict, state_file, 
     }
     append_to_csv_sync(paths['events'], event_record, schemas['events'])
     
-    # Offline Prefilter
-    urban_check = is_in_urban_area(lat, lon)
-    if urban_check == "URBAN_FILTER_VALIDATION_FAILED":
-        update_state(state_dict, state_file, event_id, "FAILED")
-        tracker.add_result("skipped_urban")
-        dashboard.update(process="Processing next event...")
-        return "URBAN_FILTER_VALIDATION_FAILED"
-    elif not urban_check:
-        update_state(state_dict, state_file, event_id, "FAILED")
-        tracker.add_result("skipped_urban")
-        dashboard.update(process="Processing next event...")
-        return "skipped_urban"
+    
+    # Offline Prefilter (already vectorized before executor, so all events here are valid)
+    urban_check = True
     
     # Offline Industrial Filter
-    is_industrial = False
-    industrial_check = is_near_industrial(lat, lon)
-    if industrial_check == "INDUSTRIAL_FILTER_VALIDATION_FAILED":
-        update_state(state_dict, state_file, event_id, "FAILED")
-        tracker.add_result("skipped_industrial") # Keep this just for failure tracking
-        dashboard.update(process="Processing next event...")
-        return "INDUSTRIAL_FILTER_VALIDATION_FAILED"
-    elif industrial_check:
-        is_industrial = True
+    is_industrial = event.get('pre_ind', False)
     
     # Generate geographic evidence record using the offline Natural Earth data
     geo_record = {
@@ -651,7 +691,52 @@ def main():
     
     events_to_process = [e for e in events if state_dict.get(e['event_id']) not in ["COMPLETED", "FAILED"]]
     
-    tracker = ProgressTracker(len(events_to_process), args.target_images)
+    if events_to_process:
+        dashboard.update(process=f"Prefiltering {len(events_to_process)} events vectorially...")
+        dashboard.render()
+        import geopandas as gpd
+        import numpy as np
+        import src.offline_urban_filter as u_filter
+        import src.offline_industrial_filter as i_filter
+        
+        lats = [e['latitude'] for e in events_to_process]
+        lons = [e['longitude'] for e in events_to_process]
+        points = gpd.GeoDataFrame(geometry=gpd.points_from_xy(lons, lats), crs="EPSG:4326")
+        
+        if u_filter._urban_gdf is not None:
+            joined_u = gpd.sjoin(points, u_filter._urban_gdf, how="left", predicate="intersects")
+            is_urban = joined_u['index_right'].notna().groupby(joined_u.index).any().values
+        else:
+            is_urban = np.ones(len(events_to_process), dtype=bool)
+            
+        if i_filter._industrial_gdf is not None:
+            ind_buffered = gpd.GeoDataFrame(geometry=i_filter._industrial_gdf.geometry.buffer(i_filter.INDUSTRIAL_BUFFER_DEG), crs="EPSG:4326")
+            joined_i = gpd.sjoin(points, ind_buffered, how="left", predicate="intersects")
+            is_ind = joined_i['index_right'].notna().groupby(joined_i.index).any().values
+        else:
+            is_ind = np.zeros(len(events_to_process), dtype=bool)
+            
+        valid_events = []
+        for i, e in enumerate(events_to_process):
+            if bool(is_urban[i]):
+                e['pre_ind'] = bool(is_ind[i])
+                valid_events.append(e)
+        
+        events_to_process = valid_events
+    
+    initial_downloaded = sum(1 for v in state_dict.values() if v == "COMPLETED")
+    initial_failed = sum(1 for v in state_dict.values() if v == "FAILED")
+    
+    tracker = ProgressTracker(
+        total=len(events_to_process) + initial_downloaded + initial_failed, 
+        target_images=args.target_images,
+        initial_downloaded=initial_downloaded,
+        initial_failed=initial_failed
+    )
+    
+    # Check if we already hit the target
+    if initial_downloaded >= args.target_images:
+        tracker.stop_requested = True
     
     def monitor_progress():
         print("\nStarting generation... (Press Ctrl+C to abort)")

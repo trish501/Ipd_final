@@ -47,7 +47,8 @@ def run_pipeline(config: PipelineConfig):
         "--mode", config.mode,
         "--start-date", config.start_date,
         "--end-date", config.end_date,
-        "--target-images", str(config.target_images)
+        "--target-images", str(config.target_images),
+        "--max-workers", "20"
     ]
     
     if config.bbox:
@@ -56,12 +57,12 @@ def run_pipeline(config: PipelineConfig):
     pipeline_start_time = datetime.now()
     pipeline_config = config
     
+    import sys
     pipeline_process = subprocess.Popen(
         cmd,
         cwd=os.path.dirname(os.path.abspath(__file__)),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True
+        stdout=sys.stdout,
+        stderr=sys.stderr
     )
     
     pipeline_process.wait()
@@ -163,9 +164,24 @@ def get_status():
     phase2_progress = 0.0
     generated = 0
     failed = 0
+    cached = 0
     total_events = 0
     
-    if os.path.exists(state_file):
+    progress_file = os.path.join(metadata_dir, "progress.json")
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, 'r') as f:
+                stats = json.load(f)
+            total_events = stats.get("total", 0)
+            generated = stats.get("downloaded", 0)
+            cached = stats.get("cached", 0)
+            failed = stats.get("failed", 0) + stats.get("skipped_urban", 0) + stats.get("skipped_no_sat", 0) + stats.get("skipped_black", 0)
+            
+            target = active_config["target_images"] if active_config else (pipeline_config.target_images if pipeline_config else 1500)
+            phase2_progress = min(100.0, ((generated + cached) / target * 100) if target > 0 else 0)
+        except Exception:
+            pass
+    elif os.path.exists(state_file):
         try:
             with open(state_file, 'r') as f:
                 state_dict = json.load(f)
@@ -214,9 +230,15 @@ def get_status():
         },
         "phase2": {
             "generated": generated,
+            "cached": cached,
             "failed": failed,
             "total_events_checked": total_events,
             "target": active_config["target_images"] if active_config else (pipeline_config.target_images if pipeline_config else 1500),
             "progress": phase2_progress
         }
     }
+
+if __name__ == "__main__":
+    import uvicorn
+    print("Backend server running on http://0.0.0.0:8000")
+    uvicorn.run(app, host="0.0.0.0", port=8000)

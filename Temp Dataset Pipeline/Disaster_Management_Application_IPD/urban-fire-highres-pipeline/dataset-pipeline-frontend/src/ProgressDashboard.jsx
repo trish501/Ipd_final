@@ -57,6 +57,10 @@ function ProgressDashboard({ status, onStop }) {
           <h3>Images Generated</h3>
           <div className="value">{phase2.generated} <span style={{fontSize: '1rem', color: 'var(--text-muted)'}}>/ {phase2.target}</span></div>
         </div>
+        <div className="metric-card success">
+          <h3>Images Cached</h3>
+          <div className="value">{phase2.cached || 0}</div>
+        </div>
         <div className="metric-card error">
           <h3>Failed Events</h3>
           <div className="value">{phase2.failed}</div>
@@ -89,10 +93,10 @@ function ProgressDashboard({ status, onStop }) {
         </div>
       )}
 
-      {current_phase === 'PHASE_2_GENERATING_IMAGES' && (
+    {current_phase === 'PHASE_2_GENERATING_IMAGES' && (
         <div className="progress-container">
           <div className="progress-header">
-            <span>Generating Images ({phase2.generated} / {phase2.target})</span>
+            <span>Generating & Caching Images ({phase2.generated + (phase2.cached || 0)} / {phase2.target})</span>
             <span>{phase2.progress.toFixed(1)}%</span>
           </div>
           <div className="progress-track">
